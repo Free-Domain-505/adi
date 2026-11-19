@@ -1,0 +1,76 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-canvas: var(--aadhi-canvas);
+  --color-surface: var(--aadhi-surface);
+  --color-surface-2: var(--aadhi-surface-2);
+  --color-ink: var(--aadhi-ink);
+  --color-muted: var(--aadhi-muted);
+  --color-line: var(--aadhi-line);
+  --color-accent: var(--aadhi-accent);
+  --color-accent-ink: var(--aadhi-accent-ink);
+  --color-teal: var(--aadhi-teal);
+}
+
+:root {
+  --aadhi-canvas: #F5F7FB;
+  --aadhi-surface: #FFFFFF;
+  --aadhi-surface-2: #EEF2F8;
+  --aadhi-ink: #0F172A;
+  --aadhi-muted: #526077;
+  --aadhi-line: rgba(15, 23, 42, 0.10);
+  --aadhi-accent: #D97706;
+  --aadhi-accent-ink: #FFFFFF;
+  --aadhi-teal: #0D9488;
+}
+
+.dark {
+  --aadhi-canvas: #080B12;
+  --aadhi-surface: #101521;
+  --aadhi-surface-2: #161E2E;
+  --aadhi-ink: #EEF2F7;
+  --aadhi-muted: #94A3B8;
+  --aadhi-line: rgba(238, 242, 247, 0.09);
+  --aadhi-accent: #F59E0B;
+  --aadhi-accent-ink: #080B12;
+  --aadhi-teal: #2DD4BF;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-family: var(--font-sans);
+  background-color: var(--aadhi-canvas);
+  color: var(--aadhi-ink);
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes kenburns {
+  0% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  100% {
+    transform: scale(1.07) translate3d(-1%, -0.5%, 0);
+  }
+}
+
+.animate-kenburns {
+  animation: kenburns 16s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-kenburns {
+    animation: none;
+  }
+}

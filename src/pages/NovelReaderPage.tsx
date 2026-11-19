@@ -137,10 +137,10 @@ export default function NovelReaderPage() {
 
       <article className="mx-auto mt-8 max-w-3xl px-4 sm:px-6">
         {loading ? (
-          <div className="animate-pulse space-y-4">
-            <div className="h-8 w-2/3 rounded bg-surface-2" />
+          <div className="space-y-4">
+            <div className="skeleton-shimmer h-8 w-2/3 rounded" />
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-4 w-full rounded bg-surface-2" />
+              <div key={i} className="skeleton-shimmer h-4 w-full rounded" />
             ))}
           </div>
         ) : error ? (
@@ -169,9 +169,23 @@ export default function NovelReaderPage() {
           <div className="space-y-5">
             <h1 className="font-display text-2xl font-extrabold text-ink sm:text-3xl">{title}</h1>
             <div className="space-y-4 leading-relaxed text-ink/90" style={{ fontSize }}>
-              {paragraphs.map((p, idx) => (
-                <p key={idx}>{p}</p>
-              ))}
+              {paragraphs.map((p, idx) => {
+                const imgMatch = p.match(/^\[img\](.*?)(?:\|(.*?))?\[\/img\]$/);
+                if (imgMatch) {
+                  return (
+                    <figure key={idx} className="my-6 overflow-hidden rounded-xl border border-line bg-surface">
+                      <img
+                        src={imgMatch[1]}
+                        alt={imgMatch[2] || `Illustration ${idx + 1}`}
+                        referrerPolicy="no-referrer"
+                        loading="lazy"
+                        className="mx-auto max-h-[75vh] w-auto object-contain"
+                      />
+                    </figure>
+                  );
+                }
+                return <p key={idx}>{p}</p>;
+              })}
             </div>
           </div>
         )}

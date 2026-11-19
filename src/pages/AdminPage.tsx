@@ -1,6 +1,5 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Timestamp, collection, onSnapshot } from 'firebase/firestore';
 import {
   Ban,
   Check,
@@ -17,9 +16,8 @@ import {
   X,
 } from 'lucide-react';
 import type { PaymentRequest } from '../types';
-import { OperationType, db, handleFirestoreError, signInWithGoogle, signOutUser } from '../lib/firebase';
+import { getAccessToken, signOutUser } from '../lib/supabase';
 import {
-  OWNER_ADMIN_EMAIL,
   OWNER_PHONE_INTL,
   approvePaymentRequest,
   cancelPaymentRequest,
@@ -32,12 +30,6 @@ import {
 } from '../lib/storage';
 import { HubBar } from '../components/HubBar';
 
-function toMs(val: unknown): number {
-  if (val instanceof Timestamp) return val.toMillis();
-  if (typeof val === 'number') return val;
-  return Date.now();
-}
-
 export default function AdminPage() {
   const { user, authReady } = useAuth();
   const adminAuthorized = isOwnerAdmin(user);
@@ -48,8 +40,8 @@ export default function AdminPage() {
   const [passBusy, setPassBusy] = useState(false);
   const [passError, setPassError] = useState<string | null>(null);
 
-  const [firestoreRequests, setFirestoreRequests] = useState<PaymentRequest[]>([]);
-  const [serverPreviews, setServerPreviews] = useState<Record<string, string>>({});
+  const [requests, setRequests] = useState<PaymentRequest[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
   const [filter, setFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notesById, setNotesById] = useState<Record<string, string>>({});
@@ -61,7 +53,7 @@ export default function AdminPage() {
     document.title = 'Owner Admin Panel — Anime by Adi 💀';
   }, []);
 
-  // Verify existing encrypted session token when owner email is logged in
+  // Verify existing session token when owner email is signed in
   useEffect(() => {
     if (!authReady || !adminAuthorized || !user) {
       setPassUnlocked(false);
@@ -88,95 +80,82 @@ export default function AdminPage() {
     };
   }, [authReady, adminAuthorized, user]);
 
-  // Load Firestore paymentRequests & server screenshots ONLY after BOTH owner email + password unlock pass
-  useEffect(() => {
-    if (!adminAuthorized || !passUnlocked || !user) {
-      setFirestoreRequests([]);
-      setServerPreviews({});
-      return;
-    }
+  const fetchPayments = useCallback(async () => {
+    if (!adminAuthorized || !passUnlocked || !user) return;
+    const passToken = getAdminPassToken();
+    const token = await getAccessToken();
+    if (!passToken || !token) return;
 
-    const reqPath = 'paymentRequests';
-    const unsub = onSnapshot(
-      collection(db, 'paymentRequests'),
-      (snap) => {
-        const list: PaymentRequest[] = [];
-        snap.forEach((docSnap) => {
-          const d = docSnap.data();
-          const plan = d.plan === 'extra_2' ? 'extra_2' : 'monthly_25';
-          const amountInr = plan === 'extra_2' ? 2 : 25;
-          list.push({
-            id: String(d.id || docSnap.id),
+    setLoadingRequests(true);
+    try {
+      const r = await fetch('/api/admin/payments', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-admin-pass': passToken,
+        },
+      });
+      if (r.status === 401) {
+        clearAdminPassToken();
+        setPassUnlocked(false);
+        return;
+      }
+      if (r.ok) {
+        const json = await r.json();
+        if (Array.isArray(json?.requests)) {
+          const mapped: PaymentRequest[] = json.requests.map((d: any) => ({
+            id: String(d.id || ''),
             userId: String(d.userId || ''),
             userEmail: String(d.userEmail || ''),
             userName: d.userName ? String(d.userName) : undefined,
-            plan,
-            amountInr,
+            plan: d.plan === 'extra_2' ? 'extra_2' : 'monthly_25',
+            amountInr: d.plan === 'extra_2' ? 2 : 25,
             referenceNumber: String(d.referenceNumber || ''),
             screenshotName: d.screenshotName ? String(d.screenshotName) : undefined,
+            screenshotPreview: d.screenshotPreview ? String(d.screenshotPreview) : undefined,
             confirmedPaid: Boolean(d.confirmedPaid),
             status: (d.status as PaymentRequest['status']) || 'pending',
             adminNote: d.adminNote ? String(d.adminNote) : undefined,
-            createdAt: toMs(d.createdAt),
-            updatedAt: toMs(d.updatedAt),
-          });
-        });
-        list.sort((a, b) => b.createdAt - a.createdAt);
-        setFirestoreRequests(list);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, reqPath);
+            createdAt: Number(d.createdAt || Date.now()),
+            updatedAt: Number(d.updatedAt || Date.now()),
+          }));
+          mapped.sort((a, b) => b.createdAt - a.createdAt);
+          setRequests(mapped);
+        }
       }
-    );
-
-    const passToken = getAdminPassToken();
-    user
-      .getIdToken()
-      .then((token) =>
-        fetch('/api/admin/payments', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'x-admin-pass': passToken,
-          },
-        })
-      )
-      .then((r) => {
-        if (r.status === 401) {
-          clearAdminPassToken();
-          setPassUnlocked(false);
-          return null;
-        }
-        return r.ok ? r.json() : null;
-      })
-      .then((json) => {
-        if (Array.isArray(json?.requests)) {
-          const map: Record<string, string> = {};
-          for (const item of json.requests) {
-            if (item?.id && item?.screenshotPreview) {
-              map[String(item.id)] = String(item.screenshotPreview);
-            }
-          }
-          setServerPreviews(map);
-        }
-      })
-      .catch(() => {});
-
-    return () => unsub();
+    } catch {
+      // Ignore network hiccups during polling
+    } finally {
+      setLoadingRequests(false);
+    }
   }, [adminAuthorized, passUnlocked, user]);
+
+  useEffect(() => {
+    if (!adminAuthorized || !passUnlocked || !user) {
+      setRequests([]);
+      return;
+    }
+
+    void fetchPayments();
+    const timer = window.setInterval(() => {
+      void fetchPayments();
+    }, 15000);
+
+    return () => window.clearInterval(timer);
+  }, [adminAuthorized, passUnlocked, user, fetchPayments]);
 
   const counts = useMemo(() => {
     return {
-      pending: firestoreRequests.filter((r) => r.status === 'pending').length,
-      approved: firestoreRequests.filter((r) => r.status === 'approved').length,
-      rejected: firestoreRequests.filter((r) => r.status === 'rejected').length,
-      all: firestoreRequests.length,
+      pending: requests.filter((r) => r.status === 'pending').length,
+      approved: requests.filter((r) => r.status === 'approved').length,
+      rejected: requests.filter((r) => r.status === 'rejected').length,
+      all: requests.length,
     };
-  }, [firestoreRequests]);
+  }, [requests]);
 
   const filteredRequests = useMemo(() => {
-    if (filter === 'all') return firestoreRequests;
-    return firestoreRequests.filter((r) => r.status === filter);
-  }, [firestoreRequests, filter]);
+    if (filter === 'all') return requests;
+    return requests.filter((r) => r.status === filter);
+  }, [requests, filter]);
 
   const handleUnlock = async (e: FormEvent) => {
     e.preventDefault();
@@ -214,10 +193,11 @@ export default function AdminPage() {
           ? '₹2 payment verified! 1 Extra Episode has been unlocked on your account.'
           : 'Payment verified! Your 30-day VIP Royal Pass is now active.');
       await approvePaymentRequest(item, note);
+      await fetchPayments();
       setStatusMessage(
         isExtra
-          ? `Approved ₹2 (1 Extra Episode) for ${item.userName || item.userEmail}!`
-          : `Approved VIP for ${item.userName || item.userEmail} — VIP badge & live popup sent!`
+          ? `Approved ₹2 (1 Extra Episode) for ${item.userName || item.userEmail}.`
+          : `Approved VIP for ${item.userName || item.userEmail} — VIP badge & live unlock sent.`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve payment');
@@ -235,8 +215,9 @@ export default function AdminPage() {
         notesById[item.id]?.trim() ||
         'Fake or unverified payment rejected. Your account has been blocked from Anime by Adi 💀.';
       await cancelPaymentRequest(item, note);
+      await fetchPayments();
       setStatusMessage(
-        `Rejected payment & blocked ${item.userName || item.userEmail} from the entire website.`
+        `Rejected payment & blocked ${item.userName || item.userEmail} from the website.`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reject & block user');
@@ -251,7 +232,7 @@ export default function AdminPage() {
 
       <div className="mx-auto mt-8 max-w-5xl px-4 sm:px-6">
         {!authReady ? (
-          <div className="h-48 animate-pulse rounded-2xl bg-surface-2" />
+          <div className="skeleton-shimmer h-48 rounded-2xl border border-line" />
         ) : !user ? (
           <div className="mx-auto max-w-md rounded-2xl border border-rose-500/35 bg-surface p-7 text-center shadow-xl">
             <Lock className="mx-auto size-10 text-rose-400" />
@@ -259,17 +240,16 @@ export default function AdminPage() {
               Locked — Owner Access Only
             </h1>
             <p className="mt-2 text-xs leading-relaxed text-muted">
-              Admin is strictly locked. Only the authorized owner Google account can unlock this panel.
+              Admin is strictly locked. Only the authorized owner account can unlock this panel.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
-              <button
-                type="button"
-                onClick={() => signInWithGoogle()}
+              <Link
+                to="/login"
                 className="inline-flex items-center gap-2 rounded-xl bg-amber-400 px-5 py-2.5 text-xs font-bold text-slate-950"
               >
                 <LogIn className="size-4" />
                 <span>Owner Sign In</span>
-              </button>
+              </Link>
               <Link
                 to="/home"
                 className="rounded-xl border border-line bg-canvas px-4 py-2.5 text-xs font-semibold text-ink"
@@ -304,7 +284,7 @@ export default function AdminPage() {
             </div>
           </div>
         ) : checkingPass ? (
-          <div className="h-48 animate-pulse rounded-2xl bg-surface-2" />
+          <div className="skeleton-shimmer h-48 rounded-2xl border border-line" />
         ) : !passUnlocked ? (
           <form
             onSubmit={handleUnlock}
@@ -431,14 +411,20 @@ export default function AdminPage() {
             </div>
 
             {/* Requests List */}
-            {filteredRequests.length === 0 ? (
+            {loadingRequests && requests.length === 0 ? (
+              <div className="space-y-4">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="skeleton-shimmer h-36 rounded-2xl border border-line" />
+                ))}
+              </div>
+            ) : filteredRequests.length === 0 ? (
               <div className="rounded-2xl border border-line bg-surface p-10 text-center text-sm text-muted">
                 No {filter === 'all' ? '' : filter} payment requests right now.
               </div>
             ) : (
               <div className="space-y-4">
                 {filteredRequests.map((item) => {
-                  const previewSrc = serverPreviews[item.id];
+                  const previewSrc = item.screenshotPreview;
                   const isBusy = busyId === item.id;
                   const waReply = `https://wa.me/${OWNER_PHONE_INTL}?text=${encodeURIComponent(
                     `Payment status update for ${item.userEmail} (Ref: ${item.referenceNumber})`

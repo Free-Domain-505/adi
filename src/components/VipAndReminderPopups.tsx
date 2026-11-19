@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { CheckCircle2, Clock, Crown, Sparkles, Ticket, X } from 'lucide-react';
+import { CheckCircle2, Clock, Crown, Ticket, X } from 'lucide-react';
 import {
   DAILY_FREE_LIMIT,
   EXTRA_EPISODE_PRICE_INR,
@@ -56,7 +56,7 @@ export function VipCelebrationModal() {
         </div>
 
         <span className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-amber-400 px-2.5 py-1 text-xs font-extrabold uppercase tracking-wider text-slate-950">
-          <Sparkles className="size-3.5" />
+          <Crown className="size-3.5 fill-current" />
           <span>VIP Approved</span>
         </span>
 

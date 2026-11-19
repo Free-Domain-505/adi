@@ -5,6 +5,7 @@ import type { MovieItem } from '../types';
 import { fetchMovieMeta } from '../lib/api';
 import { removeFromWatchlist, upsertWatchlist, useWatchlist } from '../lib/storage';
 import { MediaImage } from '../components/MediaImage';
+import { SeasonDropdown } from '../components/SeasonDropdown';
 
 export default function MovieDetailsPage() {
   const { type, id } = useParams();
@@ -12,6 +13,7 @@ export default function MovieDetailsPage() {
 
   const [meta, setMeta] = useState<MovieItem | null>(null);
   const [season, setSeason] = useState(1);
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,6 +25,7 @@ export default function MovieDetailsPage() {
     if (!id) return;
     let cancelled = false;
     setLoading(true);
+    setSynopsisExpanded(false);
     setError(null);
 
     fetchMovieMeta(mediaType, id)
@@ -46,10 +49,18 @@ export default function MovieDetailsPage() {
     };
   }, [mediaType, id]);
 
-  const seasons = useMemo(() => {
-    const set = new Set<number>();
-    for (const v of meta?.videos || []) set.add(v.season);
-    return Array.from(set).sort((a, b) => a - b);
+  const seasonOptions = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const v of meta?.videos || []) {
+      counts.set(v.season, (counts.get(v.season) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([num, epCount]) => ({
+        number: num,
+        name: `Season ${num}`,
+        episodes: epCount,
+      }));
   }, [meta?.videos]);
 
   const seasonEpisodes = useMemo(
@@ -59,10 +70,30 @@ export default function MovieDetailsPage() {
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-canvas pt-24 pb-16">
-        <div className="mx-auto max-w-6xl animate-pulse space-y-6 px-4 sm:px-6">
-          <div className="h-64 w-full rounded-2xl bg-surface-2" />
-          <div className="h-8 w-72 rounded bg-surface-2" />
+      <main className="min-h-screen bg-canvas pb-16">
+        <div className="relative h-72 w-full overflow-hidden bg-surface sm:h-96">
+          <div className="skeleton-shimmer h-full w-full opacity-40" />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-canvas via-canvas/80 to-canvas/20" />
+        </div>
+        <div className="relative z-10 mx-auto -mt-32 max-w-6xl px-4 sm:-mt-40 sm:px-6">
+          <div className="flex flex-col gap-6 md:flex-row md:items-end">
+            <div className="w-40 shrink-0 rounded-xl border border-line bg-canvas p-1 shadow-2xl sm:w-52">
+              <div className="skeleton-shimmer aspect-[2/3] w-full rounded-lg" />
+            </div>
+            <div className="flex-1 space-y-3 pb-1">
+              <div className="skeleton-shimmer h-4 w-48 rounded" />
+              <div className="skeleton-shimmer h-10 w-72 max-w-full rounded-xl" />
+              <div className="flex gap-3 pt-2">
+                <div className="skeleton-shimmer h-10 w-36 rounded-lg" />
+                <div className="skeleton-shimmer h-10 w-28 rounded-lg" />
+              </div>
+            </div>
+          </div>
+          <div className="mt-10 max-w-3xl space-y-2">
+            <div className="skeleton-shimmer h-5 w-24 rounded" />
+            <div className="skeleton-shimmer h-4 w-full rounded" />
+            <div className="skeleton-shimmer h-4 w-4/5 rounded" />
+          </div>
         </div>
       </main>
     );
@@ -98,6 +129,8 @@ export default function MovieDetailsPage() {
     }
   };
 
+  const isLongDesc = (meta.description || '').length > 130;
+
   return (
     <main className="min-h-screen bg-canvas pb-16">
       <div className="relative h-72 w-full overflow-hidden bg-surface sm:h-96">
@@ -105,9 +138,9 @@ export default function MovieDetailsPage() {
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-canvas via-canvas/65 to-canvas/20" />
       </div>
 
-      <div className="relative mx-auto -mt-32 max-w-6xl px-4 sm:-mt-40 sm:px-6">
+      <div className="relative z-10 mx-auto -mt-32 max-w-6xl px-4 sm:-mt-40 sm:px-6">
         <div className="flex flex-col gap-6 md:flex-row md:items-end">
-          <div className="w-40 shrink-0 overflow-hidden rounded-xl border border-line bg-surface shadow-xl sm:w-52">
+          <div className="w-40 shrink-0 overflow-hidden rounded-xl border border-line bg-surface shadow-2xl sm:w-52">
             <div className="aspect-[2/3] w-full">
               <MediaImage src={meta.poster} alt={meta.title} className="h-full w-full object-cover" />
             </div>
@@ -154,49 +187,75 @@ export default function MovieDetailsPage() {
         </div>
 
         {meta.description && (
-          <section className="mt-10 max-w-4xl">
-            <h2 className="font-display text-lg font-bold text-ink">Overview</h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted sm:text-[15px]">{meta.description}</p>
+          <section className="mt-5 max-w-xl">
+            <h2 className="font-display text-xs font-bold tracking-wide text-ink sm:text-[13px]">
+              Synopsis Description
+            </h2>
+            <p className={`mt-1 text-[11px] leading-relaxed text-muted sm:text-xs ${synopsisExpanded ? '' : 'line-clamp-2'}`}>
+              {meta.description}
+            </p>
+            {isLongDesc && (
+              <button
+                type="button"
+                onClick={() => setSynopsisExpanded((prev) => !prev)}
+                className="mt-1 text-[11px] font-semibold text-sky-400 hover:underline"
+              >
+                {synopsisExpanded ? 'Show less' : 'Read more'}
+              </button>
+            )}
             {meta.cast && meta.cast.length > 0 && (
-              <p className="mt-3 text-xs text-muted">
+              <p className="mt-2 text-[11px] text-muted sm:text-xs">
                 <span className="font-semibold text-ink">Cast:</span> {meta.cast.slice(0, 6).join(', ')}
               </p>
             )}
           </section>
         )}
 
-        {mediaType === 'tv' && seasons.length > 0 && (
+        {mediaType === 'tv' && seasonOptions.length > 0 && (
           <section className="mt-12">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="font-display text-xl font-bold text-ink">Episodes</h2>
-              <select
-                value={season}
-                onChange={(e) => setSeason(Number(e.target.value))}
-                aria-label="Select season"
-                className="rounded-lg border border-line bg-surface px-3 py-2 text-xs font-semibold text-ink focus:border-accent focus:outline-none"
-              >
-                {seasons.map((s) => (
-                  <option key={s} value={s}>Season {s}</option>
-                ))}
-              </select>
+            <div className="mb-5 flex flex-wrap items-center gap-3 border-b border-line pb-4">
+              <h2 className="font-display text-xl font-bold text-ink">
+                Episodes{' '}
+                <span className="ml-1 font-mono text-sm font-normal text-muted tabular-nums">
+                  ({seasonEpisodes.length})
+                </span>
+              </h2>
+              <SeasonDropdown
+                seasons={seasonOptions}
+                selectedSeason={season}
+                onChange={setSeason}
+              />
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {seasonEpisodes.map((ep) => (
                 <Link
                   key={ep.id}
                   to={`/movies/watch/tv/${meta.id}?s=${ep.season}&e=${ep.episode}`}
-                  className="group flex items-center gap-3 rounded-xl border border-line bg-surface p-2.5 transition-colors hover:border-accent/50"
+                  className="group overflow-hidden rounded-xl border border-line bg-surface transition-all hover:border-sky-400/50 hover:shadow-lg hover:shadow-black/20"
                 >
-                  <div className="h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-                    <MediaImage src={ep.thumbnail || meta.backdrop} alt={ep.title} className="h-full w-full object-cover" />
+                  <div className="relative aspect-video w-full overflow-hidden bg-surface-2">
+                    <MediaImage
+                      src={ep.thumbnail || meta.backdrop}
+                      alt={ep.title}
+                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    />
+                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
+                    <span className="absolute bottom-2.5 left-2.5 font-mono text-[11px] font-bold text-white drop-shadow tabular-nums">
+                      EP {ep.episode}
+                    </span>
+                    <div className="absolute inset-0 grid place-items-center bg-black/35 opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="grid size-10 place-items-center rounded-full bg-sky-500 text-slate-950 shadow-lg">
+                        <Play className="size-4 translate-x-0.5 fill-current" />
+                      </span>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="font-mono text-xs font-semibold text-teal tabular-nums">
-                      S{ep.season} · E{ep.episode}
-                    </p>
-                    <p className="line-clamp-1 text-xs font-medium text-ink group-hover:text-accent">
+                  <div className="p-3.5">
+                    <h3 className="line-clamp-1 text-sm font-semibold text-ink group-hover:text-sky-400">
                       {ep.title}
+                    </h3>
+                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">
+                      {ep.overview || `Season ${ep.season} · Episode ${ep.episode}`}
                     </p>
                   </div>
                 </Link>

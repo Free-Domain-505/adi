@@ -14,6 +14,7 @@ export default function MangaDetailsPage() {
 
   const [detail, setDetail] = useState<MangaItem | null>(null);
   const [chapters, setChapters] = useState<MangaChapter[]>([]);
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +26,7 @@ export default function MangaDetailsPage() {
     if (!id) return;
     let cancelled = false;
     setLoading(true);
+    setSynopsisExpanded(false);
     setError(null);
 
     Promise.all([fetchMangaDetail(id), fetchMangaChapters(id)])
@@ -49,12 +51,17 @@ export default function MangaDetailsPage() {
   if (loading) {
     return (
       <main className="min-h-screen bg-canvas pt-24 pb-16">
-        <div className="mx-auto max-w-6xl animate-pulse space-y-6 px-4 sm:px-6">
-          <div className="flex gap-6">
-            <div className="h-72 w-48 rounded-xl bg-surface-2" />
+        <div className="mx-auto max-w-6xl space-y-6 px-4 sm:px-6">
+          <div className="flex flex-col gap-6 sm:flex-row">
+            <div className="skeleton-shimmer h-72 w-48 shrink-0 rounded-xl border border-line" />
             <div className="flex-1 space-y-3">
-              <div className="h-8 w-72 rounded bg-surface-2" />
-              <div className="h-24 w-full rounded bg-surface-2" />
+              <div className="skeleton-shimmer h-8 w-72 max-w-full rounded" />
+              <div className="skeleton-shimmer h-4 w-44 rounded" />
+              <div className="skeleton-shimmer h-24 w-full rounded-xl" />
+              <div className="flex gap-3 pt-2">
+                <div className="skeleton-shimmer h-10 w-36 rounded-lg" />
+                <div className="skeleton-shimmer h-10 w-28 rounded-lg" />
+              </div>
             </div>
           </div>
         </div>
@@ -115,9 +122,27 @@ export default function MangaDetailsPage() {
               <p className="text-xs font-medium text-accent">{detail.genres.join(' · ')}</p>
             )}
             {detail.description && (
-              <p className="max-w-3xl whitespace-pre-line text-sm leading-relaxed text-muted">
-                {detail.description}
-              </p>
+              <div className="max-w-xl pt-1">
+                <h2 className="font-display text-xs font-bold tracking-wide text-ink sm:text-[13px]">
+                  Synopsis Description
+                </h2>
+                <p
+                  className={`mt-1 whitespace-pre-line text-[11px] leading-relaxed text-muted sm:text-xs ${
+                    synopsisExpanded ? '' : 'line-clamp-2'
+                  }`}
+                >
+                  {detail.description}
+                </p>
+                {detail.description.length > 130 && (
+                  <button
+                    type="button"
+                    onClick={() => setSynopsisExpanded((prev) => !prev)}
+                    className="mt-1 text-[11px] font-semibold text-sky-400 hover:underline"
+                  >
+                    {synopsisExpanded ? 'Show less' : 'Read more'}
+                  </button>
+                )}
+              </div>
             )}
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -159,7 +184,7 @@ export default function MangaDetailsPage() {
           </h2>
           {chapters.length === 0 ? (
             <p className="rounded-xl border border-line bg-surface p-6 text-sm text-muted">
-              No English chapters hosted directly on MangaDex for this entry.
+              No chapters are currently available from connected mirrors for this title.
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">

@@ -1,26 +1,33 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Bookmark,
   CheckCircle2,
   Clock,
   Crown,
+  Eye,
+  EyeOff,
   Heart,
   KeyRound,
+  Lock,
   LogIn,
   LogOut,
   Mail,
   Play,
   ShieldCheck,
-  Sparkles,
+  User,
   UserCheck,
   UserPlus,
 } from 'lucide-react';
-import { signInWithGoogle, signOutUser } from '../lib/firebase';
+import {
+  signInWithEmailPassword,
+  signOutUser,
+  signUpWithEmailPassword,
+} from '../lib/supabase';
 import {
   MONTHLY_PRICE_INR,
-  OWNER_ADMIN_EMAIL,
   isOwnerAdmin,
+  isVipFreeAccount,
   openSubModal,
   useAuth,
   useHistory,
@@ -32,24 +39,29 @@ import { EyeAvatar } from '../components/EyeAvatar';
 
 export default function LoginPage() {
   const { user, authReady } = useAuth();
+  const [searchParams] = useSearchParams();
   const watchlist = useWatchlist();
   const history = useHistory();
   const { subscription, isSubscribed, isPending, isRejected, daysRemaining, expiresAtMs } =
     useSubscription();
   const showAdmin = isOwnerAdmin(user);
+  const vipBypass = isVipFreeAccount(user);
 
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register'>(
+    searchParams.get('mode') === 'register' ? 'register' : 'login'
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Manual email & password state
+  const [fullNameInput, setFullNameInput] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
-    document.title = user ? 'My Account — Anime by Adi 💀' : 'Login & Register — Anime by Adi 💀';
+    document.title = user ? 'My Account — Anime by Adi 💀' : 'Sign In & Register — Anime by Adi 💀';
   }, [user]);
 
   const stats = useMemo(() => {
@@ -63,23 +75,7 @@ export default function LoginPage() {
     };
   }, [watchlist, history]);
 
-  const handleGoogleSignIn = async () => {
-    setBusy(true);
-    setError(null);
-    setSuccessMsg(null);
-    try {
-      await signInWithGoogle();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to sign in right now.';
-      if (!msg.includes('popup-closed-by-user')) {
-        setError(msg);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleManualSubmit = async (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
@@ -91,40 +87,36 @@ export default function LoginPage() {
     }
 
     if (mode === 'register') {
-      if (cleanEmail === OWNER_ADMIN_EMAIL.toLowerCase()) {
-        window.location.reload();
+      const cleanName = fullNameInput.trim();
+      if (cleanName.length < 2) {
+        setError('Please enter your display name (at least 2 characters).');
         return;
       }
       if (!passwordInput || passwordInput.length < 6) {
-        setError('Password must be at least 6 characters.');
+        setError('Password must be at least 6 characters long.');
         return;
       }
       if (passwordInput !== confirmPasswordInput) {
-        setError('Passwords do not match! Please re-type correctly.');
+        setError('Passwords do not match. Please re-enter them carefully.');
         return;
       }
 
       setBusy(true);
       try {
-        const accounts = JSON.parse(localStorage.getItem('aadhi:manualAccounts:v1') || '{}');
-        if (accounts[cleanEmail]) {
-          setError('This email is already registered! Please switch to Login.');
-          setBusy(false);
-          return;
+        const res = await signUpWithEmailPassword(cleanEmail, passwordInput, cleanName);
+        if (res.session) {
+          setSuccessMsg('Account created successfully. Welcome to Anime by Adi 💀.');
+        } else {
+          setSuccessMsg(
+            'Account created. Please check your inbox or sign in with your new credentials.'
+          );
+          setMode('login');
         }
-        accounts[cleanEmail] = {
-          email: cleanEmail,
-          password: passwordInput,
-          createdAt: Date.now(),
-        };
-        localStorage.setItem('aadhi:manualAccounts:v1', JSON.stringify(accounts));
-
-        setSuccessMsg('Registration successful! You can now log in with your email and password.');
-        setMode('login');
         setPasswordInput('');
         setConfirmPasswordInput('');
-      } catch {
-        setError('Registration failed. Please try again.');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Registration failed. Please try again.';
+        setError(msg);
       } finally {
         setBusy(false);
       }
@@ -136,22 +128,11 @@ export default function LoginPage() {
 
       setBusy(true);
       try {
-        const accounts = JSON.parse(localStorage.getItem('aadhi:manualAccounts:v1') || '{}');
-        const account = accounts[cleanEmail];
-
-        if (!account || account.password !== passwordInput) {
-          setError('Invalid email or password. If you registered with Google, use "Login with Google".');
-          setBusy(false);
-          return;
-        }
-
-        if (cleanEmail === OWNER_ADMIN_EMAIL.toLowerCase()) {
-          await signInWithGoogle();
-        } else {
-          setSuccessMsg(`Welcome back, ${cleanEmail}! Confirmed and signed in successfully.`);
-        }
+        await signInWithEmailPassword(cleanEmail, passwordInput);
+        setPasswordInput('');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Login failed.');
+        const msg = err instanceof Error ? err.message : 'Invalid email or password.';
+        setError(msg);
       } finally {
         setBusy(false);
       }
@@ -170,6 +151,265 @@ export default function LoginPage() {
     }
   };
 
+  // Standalone professional authentication view when not signed in
+  if (!user) {
+    return (
+      <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-canvas px-4 py-12">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.12),transparent_48%),radial-gradient(circle_at_bottom_right,rgba(45,212,191,0.10),transparent_45%)]"
+        />
+
+        <div className="relative z-10 grid w-full max-w-4xl overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl md:grid-cols-12">
+          {/* Left Cinema Brand Panel */}
+          <div className="relative hidden flex-col justify-between overflow-hidden border-r border-line bg-canvas/80 p-8 md:col-span-5 md:flex">
+            <img
+              src="/src/assets/images/aadhi_cinema_backdrop_1795006602984.jpg"
+              alt="Cinema atmosphere"
+              referrerPolicy="no-referrer"
+              className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-20"
+            />
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-canvas via-canvas/75 to-canvas/40" />
+
+            <div className="relative flex items-center gap-3">
+              <EyeAvatar size="md" />
+              <span className="font-display text-xl font-extrabold tracking-tight text-ink">
+                Anime by Adi 💀
+              </span>
+            </div>
+
+            <div className="relative space-y-4">
+              <div className="inline-flex items-center gap-1.5 rounded-lg border border-teal/35 bg-teal/10 px-2.5 py-1 text-[11px] font-semibold text-teal">
+                <ShieldCheck className="size-3.5" />
+                <span>Private Member Access</span>
+              </div>
+              <h2 className="font-display text-2xl font-extrabold leading-tight tracking-tight text-ink">
+                Stream Anime, Donghua, Series &amp; Cinema in HD.
+              </h2>
+              <p className="text-xs leading-relaxed text-muted">
+                Sign in or create your free member account to unlock the complete library, episode tracking, synced watchlists, and multi-server HD playback.
+              </p>
+
+              <div className="space-y-2 border-t border-line pt-4 text-xs text-muted">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-3.5 shrink-0 text-teal" />
+                  <span>Full TMDB Anime &amp; Donghua Season Catalog</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-3.5 shrink-0 text-teal" />
+                  <span>Manga, Manhwa &amp; Light Novel Readers</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-3.5 shrink-0 text-teal" />
+                  <span>Synced Progress Across Mobile &amp; Desktop</span>
+                </div>
+              </div>
+            </div>
+
+            <p className="relative text-[11px] text-muted/80">
+              © {new Date().getFullYear()} Anime by Adi 💀 · Protected Access
+            </p>
+          </div>
+
+          {/* Right Form Panel */}
+          <div className="p-6 sm:p-8 md:col-span-7">
+            <div className="flex items-center gap-3 md:hidden">
+              <EyeAvatar size="md" />
+              <div>
+                <span className="font-display text-lg font-extrabold tracking-tight text-ink">
+                  Anime by Adi 💀
+                </span>
+                <p className="text-[11px] font-medium text-teal">Member Access Required</p>
+              </div>
+            </div>
+
+            <div className="mt-5 md:mt-0">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal">
+                <Lock className="size-3.5" />
+                <span>{mode === 'register' ? 'Create Member Account' : 'Member Sign In'}</span>
+              </span>
+              <h1 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-ink sm:text-3xl">
+                {mode === 'register' ? 'Join Anime by Adi 💀' : 'Welcome Back'}
+              </h1>
+              <p className="mt-1.5 text-xs leading-relaxed text-muted sm:text-sm">
+                {mode === 'register'
+                  ? 'Register with your email and password to start streaming immediately.'
+                  : 'Enter your registered email and password to continue watching.'}
+              </p>
+            </div>
+
+            {!authReady ? (
+              <div className="mt-7 space-y-4">
+                <div className="skeleton-shimmer h-10 w-full rounded-xl" />
+                <div className="skeleton-shimmer h-11 w-full rounded-xl" />
+                <div className="skeleton-shimmer h-11 w-full rounded-xl" />
+                <div className="skeleton-shimmer h-12 w-full rounded-xl" />
+              </div>
+            ) : (
+              <div className="mt-6 space-y-5">
+                {/* Mode Toggle */}
+                <div className="grid grid-cols-2 gap-1 rounded-xl border border-line bg-canvas p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('login');
+                      setError(null);
+                      setSuccessMsg(null);
+                    }}
+                    className={`inline-flex items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-bold transition-colors ${
+                      mode === 'login'
+                        ? 'bg-accent text-accent-ink shadow-sm'
+                        : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    <LogIn className="size-3.5" />
+                    <span>Sign In</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('register');
+                      setError(null);
+                      setSuccessMsg(null);
+                    }}
+                    className={`inline-flex items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-bold transition-colors ${
+                      mode === 'register'
+                        ? 'bg-accent text-accent-ink shadow-sm'
+                        : 'text-muted hover:text-ink'
+                    }`}
+                  >
+                    <UserPlus className="size-3.5" />
+                    <span>Create Account</span>
+                  </button>
+                </div>
+
+                {error && (
+                  <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-medium text-rose-300">
+                    {error}
+                  </div>
+                )}
+
+                {successMsg && (
+                  <div className="rounded-xl border border-teal/40 bg-teal/15 px-4 py-3 text-xs font-semibold text-teal">
+                    {successMsg}
+                  </div>
+                )}
+
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  {mode === 'register' && (
+                    <div>
+                      <label htmlFor="auth-name" className="mb-1.5 block text-xs font-semibold text-ink">
+                        Display Name
+                      </label>
+                      <div className="relative">
+                        <User className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+                        <input
+                          id="auth-name"
+                          type="text"
+                          required
+                          autoComplete="name"
+                          value={fullNameInput}
+                          onChange={(e) => setFullNameInput(e.target.value)}
+                          placeholder="Your name"
+                          className="w-full rounded-xl border border-line bg-canvas py-3 pl-10 pr-4 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label htmlFor="auth-email" className="mb-1.5 block text-xs font-semibold text-ink">
+                      Email Address
+                    </label>
+                    <div className="relative">
+                      <Mail className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+                      <input
+                        id="auth-email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={emailInput}
+                        onChange={(e) => setEmailInput(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full rounded-xl border border-line bg-canvas py-3 pl-10 pr-4 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="auth-password" className="mb-1.5 block text-xs font-semibold text-ink">
+                      Password
+                    </label>
+                    <div className="relative">
+                      <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+                      <input
+                        id="auth-password"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        placeholder={mode === 'register' ? 'Minimum 6 characters' : 'Enter your password'}
+                        className="w-full rounded-xl border border-line bg-canvas py-3 pl-10 pr-11 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((s) => !s)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted hover:text-ink"
+                      >
+                        {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {mode === 'register' && (
+                    <div>
+                      <label htmlFor="auth-confirm" className="mb-1.5 block text-xs font-semibold text-ink">
+                        Confirm Password
+                      </label>
+                      <div className="relative">
+                        <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+                        <input
+                          id="auth-confirm"
+                          type={showPassword ? 'text' : 'password'}
+                          required
+                          autoComplete="new-password"
+                          value={confirmPasswordInput}
+                          onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                          placeholder="Re-enter your password"
+                          className="w-full rounded-xl border border-line bg-canvas py-3 pl-10 pr-4 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-5 py-3.5 text-sm font-bold text-accent-ink shadow-lg transition-transform hover:scale-[1.01] disabled:opacity-60"
+                  >
+                    {mode === 'register' ? <UserPlus className="size-4" /> : <LogIn className="size-4" />}
+                    <span>
+                      {busy
+                        ? mode === 'register'
+                          ? 'Creating Account...'
+                          : 'Signing In...'
+                        : mode === 'register'
+                          ? 'Create Account & Enter'
+                          : 'Sign In & Watch'}
+                    </span>
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // Signed-in Member Account Profile & Stats View
   return (
     <main className="min-h-screen bg-canvas pt-20 pb-20">
       <HubBar />
@@ -179,16 +419,14 @@ export default function LoginPage() {
           <div className="flex flex-col items-center text-center">
             <EyeAvatar size="xl" />
             <span className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-teal">
-              <Sparkles className="size-3.5" />
-              <span>{user ? 'Anime by Adi 💀 Profile' : 'Anime by Adi 💀 Member Access'}</span>
+              <ShieldCheck className="size-3.5" />
+              <span>Anime by Adi 💀 Profile</span>
             </span>
             <h1 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-ink sm:text-3xl">
-              {user ? 'My Account' : mode === 'register' ? 'Join Anime by Adi 💀' : 'Sign In to Anime by Adi 💀'}
+              My Account
             </h1>
             <p className="mt-2 max-w-md text-xs leading-relaxed text-muted sm:text-sm">
-              {user
-                ? 'View your profile details and synced Watch Later list across mobile and desktop.'
-                : 'Choose your preferred login or manual registration option below.'}
+              View your profile details, VIP status, and synced watchlist across mobile and desktop.
             </p>
           </div>
 
@@ -198,15 +436,12 @@ export default function LoginPage() {
             </div>
           )}
 
-          {successMsg && (
-            <div className="mt-5 rounded-xl border border-teal/40 bg-teal/15 px-4 py-3 text-xs font-semibold text-teal">
-              {successMsg}
-            </div>
-          )}
-
           {!authReady ? (
-            <div className="mt-8 h-12 w-full animate-pulse rounded-xl bg-surface-2" />
-          ) : user ? (
+            <div className="mt-8 space-y-3">
+              <div className="skeleton-shimmer h-20 w-full rounded-xl" />
+              <div className="skeleton-shimmer h-16 w-full rounded-xl" />
+            </div>
+          ) : (
             <div className="mt-6 space-y-5">
               <div className="rounded-xl border border-line bg-canvas/70 p-4 space-y-3">
                 <div className="flex items-center gap-3.5">
@@ -274,38 +509,44 @@ export default function LoginPage() {
                   </div>
                   <div>
                     <p className="text-xs font-bold text-amber-300">
-                      {isSubscribed
-                        ? `VIP Active · ${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left`
-                        : isPending
-                          ? 'Payment Verification Pending'
-                          : isRejected
-                            ? 'Previous Payment Cancelled'
-                            : `Free Tier · Upgrade for ₹${MONTHLY_PRICE_INR}/month`}
+                      {vipBypass
+                        ? 'Permanent VIP Royal Access'
+                        : isSubscribed
+                          ? `VIP Active · ${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left`
+                          : isPending
+                            ? 'Payment Verification Pending'
+                            : isRejected
+                              ? 'Previous Payment Cancelled'
+                              : `Free Tier · Upgrade for ₹${MONTHLY_PRICE_INR}/month`}
                     </p>
                     <p className="text-[11px] text-muted">
-                      {isSubscribed && expiresAtMs
-                        ? `${subscription?.adminNote || 'VIP verified by owner.'} Valid until ${new Date(expiresAtMs).toLocaleDateString('en-IN')}`
-                        : isPending
-                          ? `Ref: ${subscription?.referenceNumber || ''} · Message owner on WhatsApp for quick approval.`
-                          : isRejected
-                            ? subscription?.adminNote || 'Please resubmit payment proof or contact owner.'
-                            : '5 free videos/day · Unlock unlimited Anime, Web Series & Movies'}
+                      {vipBypass
+                        ? 'Complimentary unlimited streaming unlocked on your account.'
+                        : isSubscribed && expiresAtMs
+                          ? `${subscription?.adminNote || 'VIP verified by owner.'} Valid until ${new Date(expiresAtMs).toLocaleDateString('en-IN')}`
+                          : isPending
+                            ? `Ref: ${subscription?.referenceNumber || ''} · Message owner on WhatsApp for quick approval.`
+                            : isRejected
+                              ? subscription?.adminNote || 'Please resubmit payment proof or contact owner.'
+                              : '5 free videos/day · Unlock unlimited Anime, Web Series & Movies'}
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => openSubModal('crown')}
-                  className="rounded-lg bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 transition-transform hover:scale-[1.02]"
-                >
-                  {isSubscribed
-                    ? 'VIP Details'
-                    : isPending
-                      ? 'View / WhatsApp'
-                      : isRejected
-                        ? 'Resubmit Proof'
-                        : `Get ₹${MONTHLY_PRICE_INR} Pass`}
-                </button>
+                {!vipBypass && (
+                  <button
+                    type="button"
+                    onClick={() => openSubModal('crown')}
+                    className="rounded-lg bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 transition-transform hover:scale-[1.02]"
+                  >
+                    {isSubscribed
+                      ? 'VIP Details'
+                      : isPending
+                        ? 'View / WhatsApp'
+                        : isRejected
+                          ? 'Resubmit Proof'
+                          : `Get ₹${MONTHLY_PRICE_INR} Pass`}
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -394,140 +635,9 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
-          ) : (
-            <div className="mt-6 space-y-5">
-              {/* Option 1: Register with Google */}
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={handleGoogleSignIn}
-                  className="inline-flex w-full items-center justify-center gap-3 rounded-xl border border-line bg-surface px-5 py-3.5 text-sm font-bold text-ink shadow-sm transition-transform hover:scale-[1.01] disabled:opacity-60"
-                >
-                  <LogIn className="size-4 text-accent" />
-                  <span>{busy ? 'Connecting...' : 'Register / Login with Google'}</span>
-                </button>
-              </div>
-
-              <div className="relative flex py-1 items-center">
-                <div className="flex-grow border-t border-line"></div>
-                <span className="flex-shrink mx-4 text-xs text-muted font-medium">OR MANUAL EMAIL &amp; PASSWORD</span>
-                <div className="flex-grow border-t border-line"></div>
-              </div>
-
-              {/* Mode switch for manual form */}
-              <div className="grid grid-cols-2 gap-1 rounded-xl bg-canvas p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode('login');
-                    setError(null);
-                    setSuccessMsg(null);
-                  }}
-                  className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-semibold transition-colors ${
-                    mode === 'login' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'
-                  }`}
-                >
-                  <LogIn className="size-3.5" />
-                  <span>Manual Login</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode('register');
-                    setError(null);
-                    setSuccessMsg(null);
-                  }}
-                  className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-semibold transition-colors ${
-                    mode === 'register' ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'
-                  }`}
-                >
-                  <UserPlus className="size-3.5" />
-                  <span>Manual Register</span>
-                </button>
-              </div>
-
-              {/* Option 3: Manual Email, Password, Re-type Password, Confirm */}
-              <form onSubmit={handleManualSubmit} className="space-y-3.5 rounded-xl border border-line bg-canvas/40 p-4">
-                <p className="text-xs font-bold text-ink">
-                  {mode === 'register' ? 'Create Account with Email & Password' : 'Sign In with Email & Password'}
-                </p>
-
-                <div>
-                  <label className="mb-1 block text-xs font-semibold text-muted">Starting Email (ईमेल)</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-                    <input
-                      type="email"
-                      required
-                      value={emailInput}
-                      onChange={(e) => setEmailInput(e.target.value)}
-                      placeholder="your.email@gmail.com"
-                      className="w-full rounded-xl border border-line bg-canvas py-2.5 pl-10 pr-3.5 text-xs text-ink placeholder:text-muted focus:border-accent focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-semibold text-muted">Password (पासवर्ड)</label>
-                  <div className="relative">
-                    <KeyRound className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-                    <input
-                      type="password"
-                      required
-                      value={passwordInput}
-                      onChange={(e) => setPasswordInput(e.target.value)}
-                      placeholder="Enter your password"
-                      className="w-full rounded-xl border border-line bg-canvas py-2.5 pl-10 pr-3.5 text-xs text-ink placeholder:text-muted focus:border-accent focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {mode === 'register' && (
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold text-muted">Re-type Password (री-टाइप पासवर्ड)</label>
-                    <div className="relative">
-                      <KeyRound className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-                      <input
-                        type="password"
-                        required
-                        value={confirmPasswordInput}
-                        onChange={(e) => setConfirmPasswordInput(e.target.value)}
-                        placeholder="Re-type password to verify"
-                        className="w-full rounded-xl border border-line bg-canvas py-2.5 pl-10 pr-3.5 text-xs text-ink placeholder:text-muted focus:border-accent focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-bold text-accent-ink shadow-lg transition-transform hover:scale-[1.01] disabled:opacity-60"
-                >
-                  <CheckCircle2 className="size-4" />
-                  <span>{busy ? 'Please wait...' : mode === 'register' ? 'Confirm & Register' : 'Confirm & Login'}</span>
-                </button>
-              </form>
-
-              {/* Option 2: Continue Watching as Guest */}
-              <div className="text-center pt-2">
-                <Link
-                  to="/home"
-                  className="inline-flex items-center justify-center rounded-xl border border-line bg-canvas px-4 py-3 text-xs font-semibold text-muted transition-colors hover:text-ink w-full"
-                >
-                  Continue Watching as Guest
-                </Link>
-              </div>
-
-              <div className="rounded-xl border border-line bg-canvas/50 p-3 text-[11px] leading-relaxed text-muted text-center">
-                Owner account requires authorized Owner Login.
-              </div>
-            </div>
           )}
         </div>
       </div>
     </main>
   );
 }
-

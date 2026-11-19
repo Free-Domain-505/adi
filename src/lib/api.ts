@@ -98,63 +98,7 @@ async function cachedCall<T>(key: string, ttlMs: number, fn: () => Promise<T>): 
   return promise;
 }
 
-const MEDIA_CARD_FIELDS = `
-  id
-  idMal
-  title { romaji english native }
-  coverImage { extraLarge large color }
-  bannerImage
-  description(asHtml: false)
-  format
-  status
-  episodes
-  duration
-  season
-  seasonYear
-  averageScore
-  popularity
-  genres
-  countryOfOrigin
-  nextAiringEpisode { episode airingAt timeUntilAiring }
-  trailer { id site }
-`;
-
-export async function queryAniList<T = any>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const key = `al:${query}:${JSON.stringify(variables)}`;
-  return cachedCall(key, 5 * 60 * 1000, async () => {
-    // 1. Try local proxy first if available
-    try {
-      const res = await fetch('/api/anilist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, variables }),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const json = await res.json();
-        if (json?.data) return json.data as T;
-      }
-    } catch {
-      // Fall through to direct public API
-    }
-
-    // 2. Direct public AniList GraphQL endpoint (CORS-enabled globally for browsers)
-    const directRes = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-    const directJson = await directRes.json();
-    if (!directRes.ok || !directJson?.data) {
-      throw new Error(directJson?.errors?.[0]?.message || 'Failed to fetch anime from AniList');
-    }
-    return directJson.data as T;
-  });
-}
-
+// TMDB-powered Anime and Donghua API Client
 export async function fetchAnimeHome(): Promise<{
   trending: AnimeMedia[];
   season: AnimeMedia[];
@@ -162,34 +106,11 @@ export async function fetchAnimeHome(): Promise<{
   top: AnimeMedia[];
   upcoming: AnimeMedia[];
 }> {
-  const { season, year } = getCurrentSeason();
-  const query = `
-    query ($season: MediaSeason, $year: Int) {
-      trending: Page(page: 1, perPage: 18) {
-        media(type: ANIME, sort: TRENDING_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      season: Page(page: 1, perPage: 18) {
-        media(type: ANIME, season: $season, seasonYear: $year, sort: POPULARITY_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      popular: Page(page: 1, perPage: 18) {
-        media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      top: Page(page: 1, perPage: 18) {
-        media(type: ANIME, sort: SCORE_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      upcoming: Page(page: 1, perPage: 18) {
-        media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-    }
-  `;
-  const data = await queryAniList<any>(query, { season, year });
-  return {
-    trending: data.trending?.media || [],
-    season: data.season?.media || [],
-    popular: data.popular?.media || [],
-    top: data.top?.media || [],
-    upcoming: data.upcoming?.media || [],
-  };
+  return cachedCall('tmdb:anime:home', 10 * 60 * 1000, async () => {
+    const res = await fetch('/api/tmdb/anime/home');
+    if (!res.ok) throw new Error('Failed to fetch anime from TMDB');
+    return res.json();
+  });
 }
 
 export async function fetchDonghuaHome(): Promise<{
@@ -198,97 +119,37 @@ export async function fetchDonghuaHome(): Promise<{
   top: AnimeMedia[];
   airing: AnimeMedia[];
 }> {
-  const query = `
-    query {
-      trending: Page(page: 1, perPage: 18) {
-        media(type: ANIME, countryOfOrigin: CN, sort: TRENDING_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      airing: Page(page: 1, perPage: 18) {
-        media(type: ANIME, countryOfOrigin: CN, status: RELEASING, sort: POPULARITY_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      popular: Page(page: 1, perPage: 18) {
-        media(type: ANIME, countryOfOrigin: CN, sort: POPULARITY_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-      top: Page(page: 1, perPage: 18) {
-        media(type: ANIME, countryOfOrigin: CN, sort: SCORE_DESC, isAdult: false) { ${MEDIA_CARD_FIELDS} }
-      }
-    }
-  `;
-  const data = await queryAniList<any>(query);
-  return {
-    trending: data.trending?.media || [],
-    airing: data.airing?.media || [],
-    popular: data.popular?.media || [],
-    top: data.top?.media || [],
-  };
+  return cachedCall('tmdb:donghua:home', 10 * 60 * 1000, async () => {
+    const res = await fetch('/api/tmdb/donghua/home');
+    if (!res.ok) throw new Error('Failed to fetch donghua from TMDB');
+    return res.json();
+  });
 }
 
 export async function fetchLatestAiringEpisodes(): Promise<AiringItem[]> {
-  const now = Math.floor(Date.now() / 1000);
-  const weekAgo = now - 7 * 24 * 3600;
-  const query = `
-    query ($start: Int, $end: Int) {
-      Page(page: 1, perPage: 24) {
-        airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME_DESC) {
-          id
-          episode
-          airingAt
-          media {
-            id
-            title { romaji english native }
-            coverImage { extraLarge large color }
-            bannerImage
-            format
-            season
-            seasonYear
-            averageScore
-            genres
-            isAdult
-          }
-        }
+  return cachedCall('tmdb:latest:airing', 15 * 60 * 1000, async () => {
+    try {
+      const res = await fetch('/api/tmdb/schedule');
+      if (res.ok) {
+        const data = await res.json();
+        return data.schedules || [];
       }
-    }
-  `;
-  const data = await queryAniList<any>(query, { start: weekAgo, end: now });
-  const list = (data.Page?.airingSchedules || []) as (AiringItem & { media: AnimeMedia & { isAdult?: boolean } })[];
-  const seen = new Set<number>();
-  return list.filter((item) => {
-    if (!item.media || item.media.isAdult) return false;
-    if (seen.has(item.media.id)) return false;
-    seen.add(item.media.id);
-    return true;
+    } catch {}
+    return [];
   });
 }
 
 export async function fetchWeeklySchedule(): Promise<AiringItem[]> {
-  const now = Math.floor(Date.now() / 1000);
-  const start = now - 24 * 3600;
-  const end = now + 7 * 24 * 3600;
-  const query = `
-    query ($start: Int, $end: Int) {
-      Page(page: 1, perPage: 50) {
-        airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME) {
-          id
-          episode
-          airingAt
-          media {
-            id
-            title { romaji english native }
-            coverImage { extraLarge large color }
-            bannerImage
-            format
-            averageScore
-            genres
-            isAdult
-          }
-        }
+  return cachedCall('tmdb:weekly:schedule', 30 * 60 * 1000, async () => {
+    try {
+      const res = await fetch('/api/tmdb/schedule');
+      if (res.ok) {
+        const data = await res.json();
+        return data.schedules || [];
       }
-    }
-  `;
-  const data = await queryAniList<any>(query, { start, end });
-  return ((data.Page?.airingSchedules || []) as (AiringItem & { media: AnimeMedia & { isAdult?: boolean } })[]).filter(
-    (s) => s.media && !s.media.isAdult
-  );
+    } catch {}
+    return [];
+  });
 }
 
 export async function browseAnime(opts: {
@@ -303,167 +164,94 @@ export async function browseAnime(opts: {
   sort?: string;
   countryOfOrigin?: string;
 }): Promise<{ items: AnimeMedia[]; hasNextPage: boolean }> {
-  const query = `
-    query (
-      $page: Int
-      $perPage: Int
-      $search: String
-      $genre: String
-      $format: MediaFormat
-      $status: MediaStatus
-      $season: MediaSeason
-      $year: Int
-      $sort: [MediaSort]
-      $country: CountryCode
-    ) {
-      Page(page: $page, perPage: $perPage) {
-        pageInfo { hasNextPage }
-        media(
-          type: ANIME
-          search: $search
-          genre: $genre
-          format: $format
-          status: $status
-          season: $season
-          seasonYear: $year
-          sort: $sort
-          countryOfOrigin: $country
-          isAdult: false
-        ) {
-          ${MEDIA_CARD_FIELDS}
-        }
-      }
-    }
-  `;
-  const variables: Record<string, unknown> = {
-    page: opts.page || 1,
-    perPage: opts.perPage || 24,
-    sort: [opts.sort || (opts.search ? 'SEARCH_MATCH' : 'TRENDING_DESC')],
-  };
-  if (opts.search) variables.search = opts.search;
-  if (opts.genre) variables.genre = opts.genre;
-  if (opts.format) variables.format = opts.format;
-  if (opts.status) variables.status = opts.status;
-  if (opts.season) variables.season = opts.season;
-  if (opts.year) variables.year = opts.year;
-  if (opts.countryOfOrigin) variables.country = opts.countryOfOrigin;
+  const params = new URLSearchParams();
+  if (opts.search) params.set('q', opts.search);
+  if (opts.page) params.set('page', String(opts.page));
+  if (opts.genre) params.set('genre', opts.genre);
+  if (opts.sort) params.set('sort', opts.sort);
+  if (opts.countryOfOrigin) params.set('country', opts.countryOfOrigin);
 
-  const data = await queryAniList<any>(query, variables);
-  return {
-    items: data.Page?.media || [],
-    hasNextPage: Boolean(data.Page?.pageInfo?.hasNextPage),
-  };
+  return cachedCall(`tmdb:browse:${params.toString()}`, 5 * 60 * 1000, async () => {
+    const res = await fetch(`/api/tmdb/anime/browse?${params.toString()}`);
+    if (!res.ok) throw new Error('Failed to browse anime from TMDB');
+    const data = await res.json();
+    return {
+      items: data.items || [],
+      hasNextPage: Boolean(data.hasNextPage),
+    };
+  });
 }
 
 export async function fetchAnimeDetail(id: number): Promise<AnimeMedia> {
-  const query = `
-    query ($id: Int) {
-      Media(id: $id, type: ANIME) {
-        ${MEDIA_CARD_FIELDS}
-        studios(isMain: true) { nodes { id name isAnimationStudio } }
-        characters(perPage: 12, sort: [ROLE, RELEVANCE]) {
-          edges {
-            role
-            node { id name { full } image { large } }
-            voiceActors(language: JAPANESE, sort: RELEVANCE) {
-              id
-              name { full }
-              image { large }
-              languageV2
-            }
-          }
-        }
-        recommendations(perPage: 12, sort: RATING_DESC) {
-          nodes {
-            mediaRecommendation { ${MEDIA_CARD_FIELDS} }
-          }
-        }
-      }
-    }
-  `;
-  const data = await queryAniList<any>(query, { id });
-  if (!data?.Media) throw new Error('Anime not found');
-  return data.Media;
+  return cachedCall(`tmdb:detail:${id}:v2`, 15 * 60 * 1000, async () => {
+    const res = await fetch(`/api/tmdb/anime/detail/${id}`);
+    if (!res.ok) throw new Error('Failed to fetch anime details from TMDB');
+    return res.json();
+  });
 }
 
-export async function fetchAnimeEpisodes(id: number): Promise<{ episodes: EpisodeInfo[]; total: number; ids: IdMapping }> {
-  return cachedCall(`eps:${id}`, 10 * 60 * 1000, async () => {
+export async function fetchAnimeEpisodes(
+  id: number,
+  season = 1
+): Promise<{
+  episodes: EpisodeInfo[];
+  total: number;
+  ids: IdMapping & { anilist?: number; mal?: number };
+  anilistId?: number;
+  malId?: number;
+  absoluteOffset?: number;
+  seasons?: { number: number; name: string; episodes: number; poster?: string | null }[];
+}> {
+  return cachedCall(`tmdb:episodes:${id}:s${season}:v2`, 15 * 60 * 1000, async () => {
+    const res = await fetch(`/api/tmdb/tv/${id}/season/${season}`);
+    if (!res.ok) {
+      // Fallback to legacy endpoint if season route fails
+      const fallbackRes = await fetch(`/api/anime/${id}/episodes?season=${season}`);
+      if (fallbackRes.ok) return fallbackRes.json();
+      throw new Error('Failed to load season episodes from TMDB');
+    }
+    const data = await res.json();
+    return {
+      episodes: data.episodes || [],
+      total: data.total || data.episodes?.length || 0,
+      ids: data.ids || { themoviedb: id },
+      anilistId: data.anilistId || undefined,
+      malId: data.malId || undefined,
+      absoluteOffset: Number(data.absoluteOffset) || 0,
+    };
+  });
+}
+
+export async function fetchTmdbLogo(title: string, id?: number, type: 'tv' | 'movie' = 'tv'): Promise<string | null> {
+  const params = new URLSearchParams();
+  if (id) params.set('id', String(id));
+  if (title) params.set('title', title);
+  params.set('type', type);
+  return cachedCall(`tmdb:logo:${params.toString()}`, 24 * 60 * 60 * 1000, async () => {
     try {
-      const r = await fetch(`/api/anime/${id}/episodes`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.episodes) return json;
+      const res = await fetch(`/api/tmdb/logo?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        return data.logo || null;
       }
-    } catch {
-      // Fall through to direct query
-    }
+    } catch {}
+    return null;
+  });
+}
 
-    const query = `
-      query ($id: Int) {
-        Media(id: $id, type: ANIME) {
-          id
-          idMal
-          episodes
-          bannerImage
-          coverImage { extraLarge large }
-          streamingEpisodes { title thumbnail url site }
-          nextAiringEpisode { episode }
-        }
-      }
-    `;
-    const data = await queryAniList<any>(query, { id });
-    const media = data?.Media;
-    let totalEpisodes = media?.episodes || 0;
-    if (!totalEpisodes && media?.nextAiringEpisode?.episode) {
-      totalEpisodes = Math.max(1, media.nextAiringEpisode.episode - 1);
-    }
-    const streaming = Array.isArray(media?.streamingEpisodes) ? media.streamingEpisodes : [];
-    const episodeMap = new Map<number, { number: number; title: string; thumbnail: string | null }>();
-
-    for (const ep of streaming) {
-      const match = String(ep.title || '').match(/Episode\s+(\d+(?:\.\d+)?)\s*(?:-|:)?\s*(.*)/i);
-      const num = match ? Math.floor(Number(match[1])) : episodeMap.size + 1;
-      const cleanTitle = match && match[2] ? match[2].trim() : ep.title || `Episode ${num}`;
-      if (num > 0 && !episodeMap.has(num)) {
-        episodeMap.set(num, {
-          number: num,
-          title: cleanTitle,
-          thumbnail: ep.thumbnail || null,
-        });
-      }
-    }
-
-    const count = Math.max(totalEpisodes || 0, episodeMap.size, 1);
-    const cappedCount = Math.min(count, 2000);
-    const episodes: EpisodeInfo[] = [];
-    for (let i = 1; i <= cappedCount; i++) {
-      const found = episodeMap.get(i);
-      episodes.push({
-        number: i,
-        title: found?.title || `Episode ${i}`,
-        thumbnail: found?.thumbnail || media?.bannerImage || media?.coverImage?.extraLarge || null,
-      });
-    }
-
-    let mappedIds: IdMapping = { anilist: id, myanimelist: media?.idMal };
+export async function fetchTmdbSeasons(
+  id?: number,
+  title?: string
+): Promise<{ id: number | null; seasons: { number: number; name: string; episodes: number; poster?: string | null }[] }> {
+  const params = new URLSearchParams();
+  if (id) params.set('id', String(id));
+  if (title) params.set('title', title);
+  return cachedCall(`tmdb:seasons:${params.toString()}`, 24 * 60 * 60 * 1000, async () => {
     try {
-      const armRes = await fetch(`https://arm.haglund.dev/api/v2/ids?source=anilist&id=${id}`);
-      if (armRes.ok) {
-        const armData = await armRes.json();
-        mappedIds = {
-          anilist: id,
-          myanimelist: armData?.myanimelist || media?.idMal,
-          themoviedb: armData?.themoviedb,
-          imdb: armData?.imdb,
-          kitsu: armData?.kitsu,
-        };
-      }
-    } catch {
-      // Ignore ARM fetch error
-    }
-
-    return { episodes, total: cappedCount, ids: mappedIds };
+      const res = await fetch(`/api/tmdb/seasons?${params.toString()}`);
+      if (res.ok) return res.json();
+    } catch {}
+    return { id: id || null, seasons: [] };
   });
 }
 
@@ -475,16 +263,29 @@ export interface ResolvedStream {
   url: string;
 }
 
+export interface DirectVideoStream {
+  id: string;
+  audio?: 'sub' | 'dub';
+  language?: 'english' | 'hindi';
+  format: 'hls' | 'file';
+  streamUrl: string;
+  subtitles?: { file: string; label: string; default?: boolean }[];
+}
+
 export async function fetchAnimeStreams(opts: {
   title: string;
   romaji?: string;
   ep: number;
+  season?: number;
+  absEp?: number;
   isMovie?: boolean;
 }): Promise<ResolvedStream[]> {
   const params = new URLSearchParams({
     title: opts.title,
     romaji: opts.romaji || '',
     ep: String(opts.ep),
+    ...(opts.season ? { season: String(opts.season) } : {}),
+    ...(opts.absEp ? { absEp: String(opts.absEp) } : {}),
     isMovie: String(Boolean(opts.isMovie)),
   });
   return cachedCall(`streams:${params.toString()}`, 10 * 60 * 1000, async () => {
@@ -505,41 +306,86 @@ export async function fetchAnimeStreams(opts: {
   });
 }
 
+export async function fetchDirectAnimeStreams(opts: {
+  anilistId?: number;
+  title: string;
+  romaji?: string;
+  season?: number;
+  ep: number;
+  format?: string;
+}): Promise<DirectVideoStream[]> {
+  const params = new URLSearchParams({
+    ...(opts.anilistId ? { anilistId: String(opts.anilistId) } : {}),
+    title: opts.title,
+    romaji: opts.romaji || '',
+    season: String(opts.season || 1),
+    ep: String(opts.ep),
+    format: opts.format || 'TV',
+  });
+  return cachedCall(`direct:anime:${params.toString()}`, 8 * 60 * 1000, async () => {
+    try {
+      const r = await fetch(`/api/anime/direct-streams?${params.toString()}`);
+      if (r.ok) {
+        const json = await r.json();
+        if (Array.isArray(json?.streams)) return json.streams;
+      }
+    } catch {}
+    return [];
+  });
+}
+
+export async function fetchDirectMovieStreams(opts: {
+  id: string;
+  type: 'movie' | 'tv';
+  season?: number;
+  episode?: number;
+  title?: string;
+  year?: string | null;
+}): Promise<{ streams: DirectVideoStream[]; subtitles: { file: string; label: string; default?: boolean }[] }> {
+  const params = new URLSearchParams({
+    id: opts.id,
+    type: opts.type,
+    s: String(opts.season || 1),
+    e: String(opts.episode || 1),
+    ...(opts.title ? { title: opts.title } : {}),
+    ...(opts.year ? { year: opts.year } : {}),
+  });
+  return cachedCall(`direct:movies:${params.toString()}`, 8 * 60 * 1000, async () => {
+    try {
+      const r = await fetch(`/api/movies/direct-streams?${params.toString()}`);
+      if (r.ok) {
+        const json = await r.json();
+        return {
+          streams: Array.isArray(json?.streams) ? json.streams : [],
+          subtitles: Array.isArray(json?.subtitles) ? json.subtitles : [],
+        };
+      }
+    } catch {}
+    return { streams: [], subtitles: [] };
+  });
+}
+
 // Manga & Manhwa
 export async function fetchMangaHome(kind: 'manga' | 'manhwa' = 'manga'): Promise<{
   trending: MangaItem[];
   latest: MangaItem[];
   topRated: MangaItem[];
 }> {
-  return cachedCall(`manga:home:${kind}`, 5 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/manga/home?kind=${kind}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.trending) return json;
-      }
-    } catch {
-      // Fall through
-    }
-    return { trending: [], latest: [], topRated: [] };
+  return cachedCall(`manga:home:${kind}:v2`, 5 * 60 * 1000, async () => {
+    const r = await fetch(`/api/manga/home?kind=${kind}`);
+    const json = await r.json();
+    if (r.ok && json?.trending) return json;
+    throw new Error(json?.error || 'Failed to load catalog');
   });
 }
 
 export async function searchManga(q: string, kind: '' | 'manga' | 'manhwa' = '', offset = 0): Promise<{ results: MangaItem[]; total: number }> {
   const params = new URLSearchParams({ q, offset: String(offset), limit: '24' });
   if (kind) params.set('kind', kind);
-  return cachedCall(`manga:search:${params.toString()}`, 3 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/manga/search?${params.toString()}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.results) return json;
-      }
-    } catch {
-      // Fall through
-    }
+  return cachedCall(`manga:search:${params.toString()}:v2`, 3 * 60 * 1000, async () => {
+    const r = await fetch(`/api/manga/search?${params.toString()}`);
+    const json = await r.json();
+    if (r.ok && json?.results) return json;
     return { results: [], total: 0 };
   });
 }
@@ -554,7 +400,7 @@ export async function fetchMangaDetail(id: string): Promise<MangaItem> {
 }
 
 export async function fetchMangaChapters(id: string, offset = 0): Promise<{ chapters: MangaChapter[]; total: number }> {
-  return cachedCall(`manga:chapters:${id}:${offset}`, 5 * 60 * 1000, async () => {
+  return cachedCall(`manga:chapters:${id}:${offset}:v2`, 5 * 60 * 1000, async () => {
     const r = await fetch(`/api/manga/chapters/${encodeURIComponent(id)}?offset=${offset}`);
     const json = await r.json();
     if (!r.ok) throw new Error(json?.error || 'Failed to load chapters');
@@ -563,7 +409,7 @@ export async function fetchMangaChapters(id: string, offset = 0): Promise<{ chap
 }
 
 export async function fetchMangaPages(chapterId: string): Promise<{ pages: { index: number; url: string }[] }> {
-  return cachedCall(`manga:pages:${chapterId}`, 10 * 60 * 1000, async () => {
+  return cachedCall(`manga:pages:${chapterId}:v2`, 10 * 60 * 1000, async () => {
     const r = await fetch(`/api/manga/pages/${encodeURIComponent(chapterId)}`);
     const json = await r.json();
     if (!r.ok) throw new Error(json?.error || 'Failed to load chapter pages');
@@ -573,43 +419,69 @@ export async function fetchMangaPages(chapterId: string): Promise<{ pages: { ind
 
 // Light Novels
 export async function fetchNovelHome(): Promise<{ popular: NovelItem[]; latest: NovelItem[]; rankings: NovelItem[] }> {
-  return cachedCall('novel:home', 10 * 60 * 1000, async () => {
-    try {
-      const r = await fetch('/api/novel/home');
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
+  return cachedCall('novel:home:v2', 10 * 60 * 1000, async () => {
+    for (const source of ['novelfire', 'lnori']) {
+      try {
+        const r = await fetch(`/api/streaming/novel/home?source=${source}`);
         const json = await r.json();
-        if (json?.popular) return json;
+        if (r.ok && ((json.popular && json.popular.length > 0) || (json.latest && json.latest.length > 0))) {
+          return {
+            popular: json.popular || [],
+            latest: json.latest || [],
+            rankings: json.rankings || [],
+          };
+        }
+      } catch {
+        // try next source
       }
-    } catch {
-      // Fall through
     }
-    return { popular: [], latest: [], rankings: [] };
+    throw new Error('Novel catalog unavailable right now');
   });
 }
 
 export async function searchNovels(q: string): Promise<{ results: NovelItem[] }> {
-  return cachedCall(`novel:search:${q.toLowerCase()}`, 5 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/novel/search?q=${encodeURIComponent(q)}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.results) return json;
-      }
-    } catch {
-      // Fall through
+  return cachedCall(`novel:search:${q.toLowerCase()}:v2`, 5 * 60 * 1000, async () => {
+    const source = 'novelfire';
+    const r = await fetch(`/api/streaming/novel/search?source=${source}&q=${encodeURIComponent(q)}`);
+    const json = await r.json();
+    if (r.ok && Array.isArray(json.results) && json.results.length > 0) {
+      return { results: json.results };
     }
-    return { results: [] };
+    const r2 = await fetch(`/api/streaming/novel/search?source=lnori&q=${encodeURIComponent(q)}`);
+    const json2 = await r2.json().catch(() => ({}));
+    return { results: json2.results || [] };
   });
 }
 
 export async function fetchNovelDetail(slug: string): Promise<NovelDetail> {
-  return cachedCall(`novel:detail:${slug}`, 10 * 60 * 1000, async () => {
-    const r = await fetch(`/api/novel/detail/${encodeURIComponent(slug)}`);
-    const json = await r.json();
-    if (!r.ok) throw new Error(json?.error || 'Novel not found');
-    return json;
+  const source = slug.includes('~') ? 'lnori' : 'novelfire';
+  return cachedCall(`novel:detail:${source}:${slug}:v2`, 10 * 60 * 1000, async () => {
+    const qs = `source=${source}&slug=${encodeURIComponent(slug)}`;
+    const [detailRes, chaptersRes] = await Promise.all([
+      fetch(`/api/streaming/novel/detail?${qs}`),
+      fetch(`/api/streaming/novel/chapters?${qs}`),
+    ]);
+    const detailJson = await detailRes.json();
+    const chaptersJson = await chaptersRes.json();
+    if (!detailRes.ok) throw new Error(detailJson?.error || 'Novel not found');
+    const d = detailJson.detail || detailJson;
+    const chapters = chaptersJson.chapters || chaptersJson.results || [];
+    return {
+      slug: d.slug || slug,
+      title: d.title || 'Untitled',
+      author: d.author || 'Unknown',
+      cover: d.cover || d.poster || '',
+      summary: d.summary || d.synopsis || '',
+      genres: d.genres || [],
+      status: d.status || 'Unknown',
+      chapters: chapters.map((c: any) => ({
+        slug: c.slug || c.id,
+        title: c.title || `Chapter ${c.number || ''}`,
+        number: String(c.number || ''),
+        sourceUrl: c.url || '',
+      })),
+      sourceUrl: d.sourceUrl || d.url || '',
+    } as NovelDetail;
   });
 }
 
@@ -617,7 +489,9 @@ export async function fetchNovelChapter(
   slug: string,
   chapter: string
 ): Promise<{ title: string; paragraphs: string[]; blockedBySource?: boolean; sourceUrl: string }> {
-  const r = await fetch(`/api/novel/read/${encodeURIComponent(slug)}/${encodeURIComponent(chapter)}`);
+  const source = slug.includes('~') || chapter.includes('~') ? 'lnori' : 'novelfire';
+  const params = new URLSearchParams({ source, novelSlug: slug, chapterSlug: chapter });
+  const r = await fetch(`/api/streaming/novel/read?${params}`);
   const json = await r.json();
   if (!r.ok && !json?.sourceUrl) throw new Error(json?.error || 'Chapter unavailable');
   return json;

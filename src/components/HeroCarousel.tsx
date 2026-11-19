@@ -1,3 +1,4 @@
+import { TmdbLogoTitle } from './TmdbLogoTitle';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bookmark, Check, ChevronLeft, ChevronRight, Info, Play, Tv } from 'lucide-react';
@@ -29,14 +30,19 @@ export function HeroCarousel({ items, loading, onPlayTrailer }: HeroCarouselProp
   if (loading) {
     return (
       <section className="relative h-[68svh] min-h-[460px] max-h-[640px] w-full overflow-hidden bg-surface">
-        <div className="absolute inset-0 animate-pulse bg-surface-2/60" />
-        <div className="relative mx-auto flex h-full max-w-7xl flex-col justify-end px-4 pb-12 sm:px-6">
-          <div className="h-4 w-40 rounded bg-line" />
-          <div className="mt-3 h-10 w-80 max-w-full rounded bg-line" />
-          <div className="mt-3 h-14 w-[32rem] max-w-full rounded bg-line" />
-          <div className="mt-6 flex gap-3">
-            <div className="h-11 w-36 rounded-lg bg-line" />
-            <div className="h-11 w-32 rounded-lg bg-line" />
+        <div className="skeleton-shimmer absolute inset-0" />
+        <div className="relative mx-auto flex h-full max-w-7xl flex-col justify-end px-4 pb-8 sm:px-6">
+          <div className="skeleton-shimmer h-4 w-44 rounded" />
+          <div className="skeleton-shimmer mt-4 h-16 w-72 max-w-full rounded-xl" />
+          <div className="skeleton-shimmer mt-3 h-3.5 w-52 rounded" />
+          <div className="mt-3 space-y-2">
+            <div className="skeleton-shimmer h-4 w-[30rem] max-w-full rounded" />
+            <div className="skeleton-shimmer h-4 w-80 max-w-full rounded" />
+          </div>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <div className="skeleton-shimmer h-11 w-36 rounded-lg" />
+            <div className="skeleton-shimmer h-11 w-28 rounded-lg" />
+            <div className="skeleton-shimmer h-11 w-32 rounded-lg" />
           </div>
         </div>
       </section>
@@ -87,8 +93,9 @@ export function HeroCarousel({ items, loading, onPlayTrailer }: HeroCarouselProp
       onPointerEnter={() => setPaused(true)}
       onPointerLeave={() => setPaused(false)}
     >
-      <div key={current.id} className="animate-kenburns absolute inset-0">
+      <div key={`${current.id}-${backdrop}`} className="animate-kenburns absolute inset-0">
         <MediaImage
+          key={backdrop}
           src={backdrop}
           alt={title}
           loading="eager"
@@ -100,7 +107,7 @@ export function HeroCarousel({ items, loading, onPlayTrailer }: HeroCarouselProp
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-canvas via-canvas/60 to-canvas/20" />
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-canvas/95 via-canvas/55 to-transparent" />
 
-      <div className="relative mx-auto flex h-full max-w-7xl flex-col justify-end px-4 pb-12 pt-24 sm:px-6">
+      <div className="relative mx-auto flex h-full max-w-7xl flex-col justify-end px-4 pb-0 pt-24 sm:px-6">
         <div className="max-w-2xl">
           <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-teal tabular-nums">
             <span>Now Streaming · #{(index % slides.length) + 1}</span>
@@ -112,12 +119,15 @@ export function HeroCarousel({ items, loading, onPlayTrailer }: HeroCarouselProp
             ))}
           </div>
 
-          <h1
-            className="mt-2.5 font-display text-3xl font-extrabold tracking-tight text-ink sm:text-5xl"
-            style={{ textWrap: 'balance' }}
-          >
-            {title}
-          </h1>
+          <div className="mt-3">
+            <TmdbLogoTitle
+              title={title}
+              id={current.id}
+              initialLogo={current.logo}
+              className="font-display text-3xl font-extrabold tracking-tight text-ink sm:text-5xl"
+              imgClassName="max-h-20 sm:max-h-24 md:max-h-28 max-w-[280px] sm:max-w-md md:max-w-xl object-contain object-left drop-shadow-2xl"
+            />
+          </div>
 
           {current.genres && current.genres.length > 0 && (
             <p className="mt-2 text-xs font-medium text-accent">

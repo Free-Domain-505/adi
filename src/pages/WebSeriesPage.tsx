@@ -299,7 +299,11 @@ export default function WebSeriesPage() {
             {browseLoading ? (
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
                 {Array.from({ length: 12 }).map((_, i) => (
-                  <div key={i} className="aspect-[2/3] animate-pulse rounded-xl bg-surface-2" />
+                  <div key={i} className="space-y-2.5">
+                    <div className="skeleton-shimmer aspect-[2/3] w-full rounded-xl border border-line" />
+                    <div className="skeleton-shimmer h-3.5 w-3/4 rounded" />
+                    <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+                  </div>
                 ))}
               </div>
             ) : browseItems.length === 0 ? (

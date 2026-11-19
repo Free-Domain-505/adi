@@ -6,86 +6,80 @@ export interface AnimeEmbedServer {
   note: string;
   language: 'english';
   buildUrl: (ctx: {
-    anilistId: number;
+    tmdbId: number;
     episode: number;
+    season?: number;
     ids: IdMapping;
     isMovie?: boolean;
   }) => string | null;
 }
 
-// Verified cross-origin embed-friendly servers (English Dub / Multi-Audio, Mobile + Desktop compatible)
+// TMDB-backed cross-origin embed servers (no provider branding exposed in UI)
 export const ANIME_ENGLISH_SERVERS: AnimeEmbedServer[] = [
   {
-    id: 'vidlink-ani',
-    name: 'VidLink Fast HD',
-    note: 'Multi-Audio (Hindi / Eng) · Fast Streaming',
+    id: 'srv-1',
+    name: 'SERVER 1',
+    note: 'Primary HD Stream',
     language: 'english',
-    buildUrl: ({ anilistId, episode, ids, isMovie }) => {
-      const ref = ids.themoviedb || ids.imdb;
-      if (ref) {
-        return isMovie
-          ? `https://vidlink.pro/movie/${ref}`
-          : `https://vidlink.pro/tv/${ref}/1/${episode}`;
-      }
-      return `https://vidlink.pro/tv/${anilistId}/1/${episode}`;
+    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
+      const ref = ids.themoviedb || tmdbId || ids.imdb;
+      if (!ref) return null;
+      return isMovie
+        ? `https://vidlink.pro/movie/${ref}?primaryColor=38bdf8`
+        : `https://vidlink.pro/tv/${ref}/${season}/${episode}?primaryColor=38bdf8`;
     },
   },
   {
-    id: '2embed-ani',
-    name: '2Embed HD',
-    note: 'Hindi / English Audio · Ad-Clean',
+    id: 'srv-2',
+    name: 'SERVER 2',
+    note: 'Fast Multi-Audio Stream',
     language: 'english',
-    buildUrl: ({ episode, ids, isMovie }) => {
-      const ref = ids.imdb || ids.themoviedb;
+    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
+      const ref = ids.themoviedb || tmdbId || ids.imdb;
       if (!ref) return null;
       return isMovie
         ? `https://www.2embed.cc/embed/${ref}`
-        : `https://www.2embed.cc/embedtv/${ref}&s=1&e=${episode}`;
+        : `https://www.2embed.cc/embedtv/${ref}&s=${season}&e=${episode}`;
     },
   },
   {
-    id: 'vidsrc-ani',
-    name: 'VidSrc Cloud',
-    note: 'High Quality · Multi-Audio',
+    id: 'srv-3',
+    name: 'SERVER 3',
+    note: 'Cloud HD Mirror',
     language: 'english',
-    buildUrl: ({ episode, ids, isMovie }) => {
-      const ref = ids.themoviedb || ids.imdb;
+    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
+      const ref = ids.themoviedb || tmdbId || ids.imdb;
       if (!ref) return null;
       return isMovie
         ? `https://vidsrc.to/embed/movie/${ref}`
-        : `https://vidsrc.to/embed/tv/${ref}/1/${episode}`;
+        : `https://vidsrc.to/embed/tv/${ref}/${season}/${episode}`;
     },
   },
   {
-    id: 'vidsrcme-ani',
-    name: 'VidSrcRu Mirror',
-    note: 'Dual Audio · Smooth Playback',
+    id: 'srv-4',
+    name: 'SERVER 4',
+    note: 'Smooth Playback Mirror',
     language: 'english',
-    buildUrl: ({ episode, ids, isMovie }) => {
-      const ref = ids.imdb || ids.themoviedb;
+    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
+      const ref = ids.themoviedb || tmdbId || ids.imdb;
       if (!ref) return null;
       return isMovie
         ? `https://vidsrcme.ru/embed/movie/${ref}`
-        : `https://vidsrcme.ru/embed/tv/${ref}/1/${episode}`;
+        : `https://vidsrcme.ru/embed/tv/${ref}/${season}/${episode}`;
     },
   },
   {
-    id: 'zokoanime-dub',
-    name: 'ZokoAnime English',
-    note: 'MAL Mirror · English Dub',
+    id: 'srv-5',
+    name: 'SERVER 5',
+    note: 'Backup HD Mirror',
     language: 'english',
-    buildUrl: ({ anilistId, episode, ids }) => {
-      const malId = ids.myanimelist || anilistId;
-      return `https://zokoanime.video/stream/mal/${malId}/${episode}/dub?color=f59e0b`;
+    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
+      const ref = ids.themoviedb || tmdbId || ids.imdb;
+      if (!ref) return null;
+      return isMovie
+        ? `https://autoembed.co/movie/tmdb/${ref}`
+        : `https://autoembed.co/tv/tmdb/${ref}-${season}-${episode}`;
     },
-  },
-  {
-    id: 'megaplay-ani-dub',
-    name: 'MegaPlay Cloud',
-    note: 'English Dub Backup',
-    language: 'english',
-    buildUrl: ({ anilistId, episode }) =>
-      `https://megaplay.buzz/stream/ani/${anilistId}/${episode}/dub`,
   },
 ];
 
@@ -103,31 +97,11 @@ export interface MovieEmbedServer {
   }) => string;
 }
 
-// Only xfo=null cross-origin iframe servers that play smoothly on Mobile & Desktop
 export const MOVIE_SERVERS: MovieEmbedServer[] = [
   {
-    id: '2embed',
-    name: '2Embed HD',
-    note: 'Primary · Hindi / English Audio',
-    supportsHindiHint: true,
-    buildUrl: ({ id, type, season, episode }) =>
-      type === 'movie'
-        ? `https://www.2embed.cc/embed/${id}`
-        : `https://www.2embed.cc/embedtv/${id}&s=${season}&e=${episode}`,
-  },
-  {
-    id: 'vidlink-pro',
-    name: 'VidLink Fast HD',
-    note: 'Multi-Audio · Mobile & PC',
-    buildUrl: ({ id, type, season, episode }) =>
-      type === 'movie'
-        ? `https://vidlink.pro/movie/${id}?primaryColor=f59e0b`
-        : `https://vidlink.pro/tv/${id}/${season}/${episode}?primaryColor=f59e0b`,
-  },
-  {
     id: 'vidsrc-to',
-    name: 'VidSrc Cloud',
-    note: 'Hindi / English Audio Switcher',
+    name: 'SERVER 1',
+    note: 'Hindi / Multi-Audio Mirror',
     supportsHindiHint: true,
     buildUrl: ({ id, type, season, episode, language }) =>
       type === 'movie'
@@ -135,21 +109,41 @@ export const MOVIE_SERVERS: MovieEmbedServer[] = [
         : `https://vidsrc.to/embed/tv/${id}/${season}/${episode}?lang=${language === 'hindi' ? 'hi' : 'en'}`,
   },
   {
+    id: 'vidlink-pro',
+    name: 'SERVER 2',
+    note: 'Multi-Audio HD Stream',
+    supportsHindiHint: true,
+    buildUrl: ({ id, type, season, episode }) =>
+      type === 'movie'
+        ? `https://vidlink.pro/movie/${id}?primaryColor=38bdf8`
+        : `https://vidlink.pro/tv/${id}/${season}/${episode}?primaryColor=38bdf8`,
+  },
+  {
+    id: 'autoembed',
+    name: 'SERVER 3',
+    note: 'Multi-Lang Backup',
+    supportsHindiHint: true,
+    buildUrl: ({ id, type, season, episode }) =>
+      type === 'movie'
+        ? `https://autoembed.co/movie/tmdb/${id}`
+        : `https://autoembed.co/tv/tmdb/${id}-${season}-${episode}`,
+  },
+  {
+    id: '2embed',
+    name: 'SERVER 4',
+    note: 'Primary HD Stream',
+    buildUrl: ({ id, type, season, episode }) =>
+      type === 'movie'
+        ? `https://www.2embed.cc/embed/${id}`
+        : `https://www.2embed.cc/embedtv/${id}&s=${season}&e=${episode}`,
+  },
+  {
     id: 'vidsrc-me',
-    name: 'VidSrcRu Mirror',
+    name: 'SERVER 5',
     note: 'Dual Audio Mirror',
     buildUrl: ({ id, type, season, episode }) =>
       type === 'movie'
         ? `https://vidsrcme.ru/embed/movie/${id}`
         : `https://vidsrcme.ru/embed/tv/${id}/${season}/${episode}`,
-  },
-  {
-    id: 'autoembed',
-    name: 'AutoEmbed',
-    note: 'Backup Stream',
-    buildUrl: ({ id, type, season, episode, language }) =>
-      type === 'movie'
-        ? `https://player.autoembed.cc/embed/movie/${id}?lang=${language === 'hindi' ? 'hi' : 'en'}`
-        : `https://player.autoembed.cc/embed/tv/${id}/${season}/${episode}?lang=${language === 'hindi' ? 'hi' : 'en'}`,
   },
 ];

@@ -165,7 +165,7 @@ export default function MangaReaderPage() {
         {loading ? (
           <div className="space-y-4">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="aspect-[2/3] w-full animate-pulse rounded-xl bg-surface-2" />
+              <div key={i} className="skeleton-shimmer aspect-[2/3] w-full rounded-xl border border-line" />
             ))}
           </div>
         ) : error ? (

@@ -8,16 +8,13 @@ import {
   LogIn,
   MessageCircle,
   Phone,
-  QrCode,
   ShieldCheck,
-  Sparkles,
   Ticket,
   Tv,
   Upload,
   X,
   Zap,
 } from 'lucide-react';
-import { signInWithGoogle } from '../lib/firebase';
 import {
   DAILY_FREE_LIMIT,
   EXTRA_EPISODE_PRICE_INR,
@@ -68,7 +65,7 @@ async function compressScreenshotPreview(file: File): Promise<string | undefined
 }
 
 export function SubscriptionModal() {
-  const { open, reason, plan } = useSubModal();
+  const { open, reason, selectedPlan: plan } = useSubModal();
   const { user } = useAuth();
   const {
     subscription,
@@ -89,7 +86,6 @@ export function SubscriptionModal() {
   const [confirmedPaid, setConfirmedPaid] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [authBusy, setAuthBusy] = useState(false);
 
   const isExtraPlan = plan === 'extra_2';
   const activePrice = isExtraPlan ? EXTRA_EPISODE_PRICE_INR : MONTHLY_PRICE_INR;
@@ -131,25 +127,10 @@ export function SubscriptionModal() {
     setServerPreviewDataUrl(compressed);
   };
 
-  const handleGoogleLogin = async () => {
-    setAuthBusy(true);
-    setError(null);
-    try {
-      await signInWithGoogle();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to sign in.';
-      if (!msg.includes('popup-closed-by-user')) {
-        setError(msg);
-      }
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
   const handleSubmitProof = async (e: FormEvent) => {
     e.preventDefault();
     if (!user || user.emailVerified === false) {
-      setError('Please sign in with Google first so the owner can attach this pass to your account.');
+      setError('Please sign in to your account first so the owner can attach this pass to your profile.');
       return;
     }
     const trimmedRef = referenceNumber.trim();
@@ -264,7 +245,7 @@ export function SubscriptionModal() {
                 isExtraPlan && !isSubscribed ? 'text-teal' : 'text-amber-400'
               }`}
             >
-              <Sparkles className="size-3.5" />
+              <Crown className="size-3.5 fill-current" />
               <span>
                 {isSubscribed
                   ? 'VIP Royal Pass Active'
@@ -383,7 +364,7 @@ export function SubscriptionModal() {
                     <p className="text-[11px] text-muted">Counts once opened</p>
                   </div>
                   <div className="rounded-xl border border-line bg-canvas/60 p-3 text-center">
-                    <Sparkles className="mx-auto size-4 text-teal" />
+                    <CheckCircle2 className="mx-auto size-4 text-teal" />
                     <p className="mt-1 text-xs font-bold text-ink">12:00 AM Reset</p>
                     <p className="text-[11px] text-muted">5 free every night</p>
                   </div>
@@ -452,20 +433,19 @@ export function SubscriptionModal() {
               {!user && (
                 <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3.5 text-left">
                   <p className="text-xs font-bold text-amber-300">
-                    Sign in Required to Activate Pass
+                    Sign In Required to Activate Pass
                   </p>
                   <p className="mt-1 text-[11px] text-muted">
-                    Please sign in with Google so the owner can see your account and unlock your{' '}
-                    {isExtraPlan ? 'extra episode' : 'VIP badge'} automatically.
+                    Please sign in with your email and password so the owner can attach your{' '}
+                    {isExtraPlan ? 'extra episode' : 'VIP pass'} directly to your account.
                   </p>
                   <button
                     type="button"
-                    disabled={authBusy}
-                    onClick={handleGoogleLogin}
-                    className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 disabled:opacity-50"
+                    onClick={closeSubModal}
+                    className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950"
                   >
                     <LogIn className="size-3.5" />
-                    <span>{authBusy ? 'Connecting...' : 'Sign in with Google'}</span>
+                    <span>Go to Sign In</span>
                   </button>
                 </div>
               )}

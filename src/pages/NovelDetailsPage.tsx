@@ -9,6 +9,7 @@ import { MediaImage } from '../components/MediaImage';
 export default function NovelDetailsPage() {
   const { slug } = useParams();
   const [detail, setDetail] = useState<NovelDetail | null>(null);
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,6 +21,7 @@ export default function NovelDetailsPage() {
     if (!slug) return;
     let cancelled = false;
     setLoading(true);
+    setSynopsisExpanded(false);
     setError(null);
 
     fetchNovelDetail(slug)
@@ -43,12 +45,17 @@ export default function NovelDetailsPage() {
   if (loading) {
     return (
       <main className="min-h-screen bg-canvas pt-24 pb-16">
-        <div className="mx-auto max-w-6xl animate-pulse space-y-6 px-4 sm:px-6">
-          <div className="flex gap-6">
-            <div className="h-72 w-48 rounded-xl bg-surface-2" />
+        <div className="mx-auto max-w-6xl space-y-6 px-4 sm:px-6">
+          <div className="flex flex-col gap-6 sm:flex-row">
+            <div className="skeleton-shimmer h-72 w-48 shrink-0 rounded-xl border border-line" />
             <div className="flex-1 space-y-3">
-              <div className="h-8 w-72 rounded bg-surface-2" />
-              <div className="h-24 w-full rounded bg-surface-2" />
+              <div className="skeleton-shimmer h-8 w-72 max-w-full rounded" />
+              <div className="skeleton-shimmer h-4 w-44 rounded" />
+              <div className="skeleton-shimmer h-24 w-full rounded-xl" />
+              <div className="flex gap-3 pt-2">
+                <div className="skeleton-shimmer h-10 w-36 rounded-lg" />
+                <div className="skeleton-shimmer h-10 w-28 rounded-lg" />
+              </div>
             </div>
           </div>
         </div>
@@ -108,9 +115,27 @@ export default function NovelDetailsPage() {
               <p className="text-xs font-medium text-accent">{detail.genres.join(' · ')}</p>
             )}
             {detail.summary && (
-              <p className="max-w-3xl whitespace-pre-line text-sm leading-relaxed text-muted">
-                {detail.summary}
-              </p>
+              <div className="max-w-xl pt-1">
+                <h2 className="font-display text-xs font-bold tracking-wide text-ink sm:text-[13px]">
+                  Synopsis Description
+                </h2>
+                <p
+                  className={`mt-1 whitespace-pre-line text-[11px] leading-relaxed text-muted sm:text-xs ${
+                    synopsisExpanded ? '' : 'line-clamp-2'
+                  }`}
+                >
+                  {detail.summary}
+                </p>
+                {detail.summary.length > 130 && (
+                  <button
+                    type="button"
+                    onClick={() => setSynopsisExpanded((prev) => !prev)}
+                    className="mt-1 text-[11px] font-semibold text-sky-400 hover:underline"
+                  >
+                    {synopsisExpanded ? 'Show less' : 'Read more'}
+                  </button>
+                )}
+              </div>
             )}
 
             <div className="flex flex-wrap items-center gap-3 pt-2">

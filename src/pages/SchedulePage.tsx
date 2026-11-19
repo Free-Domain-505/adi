@@ -79,11 +79,12 @@ export default function SchedulePage() {
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {loading
             ? Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="flex animate-pulse gap-3 rounded-xl border border-line bg-surface p-3">
-                  <div className="h-24 w-16 shrink-0 rounded-lg bg-surface-2" />
+                <div key={i} className="flex gap-3 rounded-xl border border-line bg-surface p-3">
+                  <div className="skeleton-shimmer h-24 w-16 shrink-0 rounded-lg" />
                   <div className="flex-1 space-y-2 py-1">
-                    <div className="h-4 w-3/4 rounded bg-surface-2" />
-                    <div className="h-3 w-1/2 rounded bg-surface-2" />
+                    <div className="skeleton-shimmer h-4 w-3/4 rounded" />
+                    <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+                    <div className="skeleton-shimmer h-3 w-1/3 rounded" />
                   </div>
                 </div>
               ))

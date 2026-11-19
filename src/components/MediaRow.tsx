@@ -97,14 +97,17 @@ export function MediaRow({
         >
           {loading
             ? Array.from({ length: skeletonCount }).map((_, idx) => (
-                <div key={idx} className={`${cardWidthClass} shrink-0 animate-pulse space-y-2`}>
+                <div key={idx} className={`${cardWidthClass} shrink-0 space-y-2.5`}>
                   <div
-                    className={`w-full rounded-xl bg-surface-2 ${
+                    className={`skeleton-shimmer w-full rounded-xl border border-line ${
                       skeletonAspect === 'landscape' ? 'aspect-[16/9]' : 'aspect-[2/3]'
                     }`}
                   />
-                  <div className="h-3.5 w-3/4 rounded bg-surface-2" />
-                  <div className="h-3 w-1/2 rounded bg-surface-2" />
+                  <div className="space-y-1.5 px-0.5">
+                    <div className="skeleton-shimmer h-3 w-1/3 rounded" />
+                    <div className="skeleton-shimmer h-3.5 w-4/5 rounded" />
+                    <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+                  </div>
                 </div>
               ))
             : children}

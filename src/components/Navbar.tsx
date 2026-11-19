@@ -81,7 +81,7 @@ export function Navbar({ onOpenSearch }: NavbarProps) {
         }`}
       >
         <div className="mx-auto flex h-[68px] max-w-7xl items-center justify-between gap-3 px-4 sm:gap-6 sm:px-6">
-          {/* Zone 1: Brand DP with King's Crown (ताज) directly underneath + Wordmark */}
+          {/* Zone 1: Brand Avatar with Crown Badge directly underneath + Wordmark */}
           <div className="flex shrink-0 items-center gap-2.5">
             <div className="flex flex-col items-center justify-center gap-0.5">
               <Link

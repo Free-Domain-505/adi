@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Ban, LogOut, MessageCircle } from 'lucide-react';
-import { signOutUser } from './lib/firebase';
+import { signOutUser } from './lib/supabase';
 import { OWNER_PHONE_INTL, isOwnerAdmin, useAuth, useBlockedState } from './lib/storage';
 import { Navbar } from './components/Navbar';
 import { SearchModal } from './components/SearchModal';
@@ -44,7 +44,7 @@ function ScrollToTop() {
 
 function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false);
-  const { user } = useAuth();
+  const { user, authReady } = useAuth();
   const blockedState = useBlockedState();
   const isBlockedUser = Boolean(user && !isOwnerAdmin(user) && blockedState.blocked);
 
@@ -58,6 +58,31 @@ function AppShell() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
+        <div className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-surface p-7">
+          <div className="mx-auto size-16 rounded-2xl skeleton-shimmer" />
+          <div className="mx-auto h-6 w-48 rounded skeleton-shimmer" />
+          <div className="mx-auto h-4 w-64 rounded skeleton-shimmer" />
+          <div className="h-11 w-full rounded-xl skeleton-shimmer" />
+          <div className="h-11 w-full rounded-xl skeleton-shimmer" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <ScrollToTop />
+        <Routes>
+          <Route path="*" element={<LoginPage />} />
+        </Routes>
+      </>
+    );
+  }
 
   if (isBlockedUser) {
     const waSupport = `https://wa.me/${OWNER_PHONE_INTL}?text=${encodeURIComponent(

@@ -57,10 +57,9 @@ export function Footer() {
           <div>
             <h3 className="text-xs font-semibold tracking-wider text-muted">Sources</h3>
             <ul className="mt-3 space-y-2.5 text-muted">
-              <li><a href="https://anilist.co" target="_blank" rel="noreferrer noopener" className="hover:text-accent transition-colors">AniList GraphQL</a></li>
+              <li><a href="https://www.themoviedb.org" target="_blank" rel="noreferrer noopener" className="hover:text-accent transition-colors">TMDB Database</a></li>
               <li><a href="https://mangadex.org" target="_blank" rel="noreferrer noopener" className="hover:text-accent transition-colors">MangaDex</a></li>
               <li><a href="https://novelfire.net" target="_blank" rel="noreferrer noopener" className="hover:text-accent transition-colors">NovelFire</a></li>
-              <li><a href="https://kitsu.io" target="_blank" rel="noreferrer noopener" className="hover:text-accent transition-colors">Kitsu</a></li>
             </ul>
           </div>
 

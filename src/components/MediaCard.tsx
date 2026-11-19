@@ -11,6 +11,23 @@ export interface MediaCardProps {
   aspect?: 'portrait' | 'landscape';
 }
 
+export function MediaCardSkeleton({ aspect = 'portrait' }: { aspect?: 'portrait' | 'landscape' }) {
+  return (
+    <div className="flex flex-col space-y-2.5">
+      <div
+        className={`skeleton-shimmer w-full rounded-xl border border-line ${
+          aspect === 'landscape' ? 'aspect-[16/9]' : 'aspect-[2/3]'
+        }`}
+      />
+      <div className="space-y-1.5 px-0.5">
+        <div className="skeleton-shimmer h-3 w-1/3 rounded" />
+        <div className="skeleton-shimmer h-4 w-4/5 rounded" />
+        <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+      </div>
+    </div>
+  );
+}
+
 export function MediaCard({
   href,
   title,
@@ -23,7 +40,7 @@ export function MediaCard({
   return (
     <Link
       to={href}
-      className="group flex flex-col outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-xl"
+      className="touch-highlight clickable-card group flex flex-col rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       <div
         className={`relative w-full overflow-hidden rounded-xl border border-line bg-surface transition-transform duration-200 group-hover:-translate-y-0.5 ${

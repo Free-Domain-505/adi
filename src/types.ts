@@ -16,6 +16,8 @@ export interface AnimeMedia {
     color?: string | null;
   } | null;
   bannerImage?: string | null;
+  logo?: string | null;
+  seasons?: { number: number; name: string; episodes: number; poster?: string | null; anilistId?: number; malId?: number }[] | null;
   description?: string | null;
   format?: MediaFormat | null;
   status?: string | null;
@@ -64,14 +66,12 @@ export interface EpisodeInfo {
   number: number;
   title: string;
   thumbnail: string | null;
+  overview?: string | null;
 }
 
 export interface IdMapping {
-  anilist?: number;
-  myanimelist?: number;
   themoviedb?: number;
   imdb?: string;
-  kitsu?: number;
 }
 
 export interface MangaItem {

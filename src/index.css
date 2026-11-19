@@ -2,8 +2,8 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
   --color-canvas: var(--aadhi-canvas);
@@ -69,8 +69,65 @@ html {
   animation: kenburns 16s ease-out forwards;
 }
 
+@keyframes skeletonShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--aadhi-surface-2) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    var(--aadhi-surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.4s infinite linear;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-kenburns {
+  .animate-kenburns,
+  .skeleton-shimmer {
     animation: none;
   }
+}
+
+/* Universal Crunchyroll-style mobile touch highlight / pressed overlays */
+.touch-highlight,
+a:not([href=""]):not(.no-highlight):not(.absolute),
+button:not(.no-highlight):not(.absolute):not(.previous-button):not(.next-button),
+[role="button"]:not(.no-highlight):not(.absolute),
+.clickable-card {
+  -webkit-tap-highlight-color: transparent !important;
+  position: relative;
+  outline: none;
+}
+
+.touch-highlight::after,
+a:not([href=""]):not(.no-highlight)::after,
+button:not(.no-highlight)::after,
+[role="button"]:not(.no-highlight)::after,
+.clickable-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: transparent;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 30;
+  transition: background-color 0.15s ease;
+}
+
+/* Translucent blue/cyan pressed overlay during active touch/press only */
+.touch-highlight:active::after,
+a:not([href=""]):not(.no-highlight):active::after,
+button:not(.no-highlight):active::after,
+[role="button"]:not(.no-highlight):active::after,
+.clickable-card:active::after {
+  background-color: rgba(50, 180, 255, 0.18) !important;
+  transition: none;
 }

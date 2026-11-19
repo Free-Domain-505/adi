@@ -244,10 +244,10 @@ export default function CatalogPage({ presetSort, presetTitle, donghuaOnly }: Ca
 
           {loading &&
             Array.from({ length: 12 }).map((_, i) => (
-              <div key={`sk-${i}`} className="animate-pulse space-y-2">
-                <div className="aspect-[2/3] w-full rounded-xl bg-surface-2" />
-                <div className="h-3.5 w-3/4 rounded bg-surface-2" />
-                <div className="h-3 w-1/2 rounded bg-surface-2" />
+              <div key={`sk-${i}`} className="space-y-2.5">
+                <div className="skeleton-shimmer aspect-[2/3] w-full rounded-xl border border-line" />
+                <div className="skeleton-shimmer h-3.5 w-3/4 rounded" />
+                <div className="skeleton-shimmer h-3 w-1/2 rounded" />
               </div>
             ))}
         </div>

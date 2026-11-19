@@ -17,9 +17,11 @@ export function MediaImage({
   loading = 'lazy',
 }: MediaImageProps) {
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     setFailed(false);
+    setLoaded(false);
   }, [src]);
 
   if (!src || failed) {
@@ -38,13 +40,23 @@ export function MediaImage({
   }
 
   return (
-    <img
-      src={src}
-      alt={alt}
-      loading={loading}
-      referrerPolicy="no-referrer"
-      onError={() => setFailed(true)}
-      className={className}
-    />
+    <div className="relative h-full w-full overflow-hidden">
+      {!loaded && (
+        <div
+          aria-hidden="true"
+          className="skeleton-shimmer pointer-events-none absolute inset-0 z-10"
+        />
+      )}
+      <img
+        key={src}
+        src={src}
+        alt={alt}
+        loading={loading}
+        referrerPolicy="no-referrer"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+      />
+    </div>
   );
 }

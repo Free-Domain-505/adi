@@ -195,6 +195,18 @@ export function SearchModal({ open, onClose, initialQuery = '' }: SearchModalPro
                 Type any anime, donghua, manga, manhwa, novel, or movie for instant HD results.
               </p>
             </div>
+          ) : loading && results.length === 0 ? (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {Array.from({ length: 6 }).map((_, idx) => (
+                <div key={idx} className="flex items-center gap-3 rounded-xl p-2">
+                  <div className="skeleton-shimmer h-16 w-12 shrink-0 rounded-lg" />
+                  <div className="flex-1 space-y-2">
+                    <div className="skeleton-shimmer h-4 w-3/4 rounded" />
+                    <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : !loading && results.length === 0 ? (
             <p className="py-10 text-center text-sm text-muted">No matches found for &ldquo;{query}&rdquo;.</p>
           ) : (

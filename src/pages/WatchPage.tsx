@@ -69,7 +69,7 @@ export default function WatchPage() {
   const [absoluteOffset, setAbsoluteOffset] = useState<number>(0);
   const language = useAudioPref();
   const [resolvedStreams, setResolvedStreams] = useState<ResolvedStream[]>([]);
-  const [streamsLoading, setStreamsLoading] = useState(false);
+  const [streamsLoading, setStreamsLoading] = useState(true);
   const [selectedMode, setSelectedMode] = useState<'sub' | 'dub'>('dub');
   const [serverId, setServerId] = useState<string>(ANIME_ENGLISH_SERVERS[0]?.id || 'srv-1');
   const [manualServerPick, setManualServerPick] = useState(false);
@@ -98,11 +98,14 @@ export default function WatchPage() {
     if (!Number.isFinite(animeId) || animeId <= 0) {
       setError('Invalid anime ID');
       setLoading(false);
+      setStreamsLoading(false);
       return;
     }
 
     let cancelled = false;
     setLoading(true);
+    setStreamsLoading(true);
+    setResolvedStreams([]);
     setError(null);
 
     Promise.all([fetchAnimeDetail(animeId), fetchAnimeEpisodes(animeId, currentSeason)])
@@ -133,7 +136,10 @@ export default function WatchPage() {
         );
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load stream');
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load stream');
+          setStreamsLoading(false);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -198,7 +204,7 @@ export default function WatchPage() {
     });
   }, [media, currentEp, currentSeason, canWatch]);
 
-  // Build DUB embed server list, prioritizing Hindi dub servers when Hindi is selected
+  // Build DUB embed server list, strictly prioritizing Hindi dub servers when Hindi is selected
   const hasHindiDub = useMemo(
     () => resolvedStreams.some((s) => s.language === 'hindi'),
     [resolvedStreams]
@@ -243,13 +249,19 @@ export default function WatchPage() {
       });
     }
 
-    for (const srv of ANIME_ENGLISH_SERVERS) {
+    const orderedFallback =
+      language === 'hindi'
+        ? [...ANIME_ENGLISH_SERVERS].sort((a, b) => Number(Boolean(b.supportsHindiHint)) - Number(Boolean(a.supportsHindiHint)))
+        : ANIME_ENGLISH_SERVERS;
+
+    for (const srv of orderedFallback) {
       const url = srv.buildUrl({
         tmdbId: ids.themoviedb || media?.tmdbId || animeId,
         episode: tmdbEpForEmbed,
         season: tmdbSeasonForEmbed,
         ids,
         isMovie: media?.format === 'MOVIE',
+        language,
       });
       if (url) {
         items.push({
@@ -261,7 +273,7 @@ export default function WatchPage() {
     }
 
     return items;
-  }, [resolvedStreams, language, animeId, currentEp, currentSeason, absoluteOffset, ids, media?.format]);
+  }, [resolvedStreams, language, animeId, currentEp, currentSeason, absoluteOffset, ids, media?.format, media?.tmdbId]);
 
   // SUB English embed stream
   const subEmbedUrl = useMemo(() => {

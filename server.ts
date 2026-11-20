@@ -1187,6 +1187,8 @@ function extractSeasonNum(title: string): number {
   if (m1) return Math.max(1, Number(m1[1]));
   const m2 = title.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
   if (m2) return Math.max(1, Number(m2[1]));
+  const m3 = title.match(/\bpart\s+(\d+)\b/i);
+  if (m3) return Math.max(1, Number(m3[1]));
   return 1;
 }
 
@@ -1198,11 +1200,21 @@ async function resolveAnimeSaltStreams(
   explicitSeason?: number,
   absEp?: number
 ) {
-  const streams: { id: string; name: string; language: 'hindi' | 'english'; note: string; url: string }[] = [];
-  const rawQuery = normalizeTitleStr(title || romaji);
-  if (!rawQuery) return streams;
+  const hindiStreams: { id: string; name: string; language: 'hindi' | 'english'; note: string; url: string }[] = [];
+  const multiStreams: { id: string; name: string; language: 'hindi' | 'english'; note: string; url: string }[] = [];
+  const englishStreams: { id: string; name: string; language: 'hindi' | 'english'; note: string; url: string }[] = [];
 
-  const season = explicitSeason && explicitSeason > 0 ? explicitSeason : extractSeasonNum(title || romaji);
+  const rawQuery = normalizeTitleStr(title || romaji);
+  if (!rawQuery) return [];
+
+  const titleSeason = extractSeasonNum(title || romaji);
+  const season =
+    explicitSeason && explicitSeason > 1
+      ? explicitSeason
+      : titleSeason > 1
+        ? titleSeason
+        : explicitSeason || 1;
+
   const searchTerms = Array.from(
     new Set([
       rawQuery,
@@ -1252,7 +1264,7 @@ async function resolveAnimeSaltStreams(
     }
   }
 
-  if (!matchedHref) return streams;
+  if (!matchedHref) return [];
 
   const slug = matchedHref.split('/').filter(Boolean).pop() || '';
   const epUrls = isMovie
@@ -1292,7 +1304,7 @@ async function resolveAnimeSaltStreams(
                   const link = String(item?.link || '');
                   if (!link) continue;
                   if (lang === 'hindi') {
-                    streams.push({
+                    hindiStreams.push({
                       id: 'salt-hindi',
                       name: 'Hindi Server HD',
                       language: 'hindi',
@@ -1300,7 +1312,7 @@ async function resolveAnimeSaltStreams(
                       url: link,
                     });
                   } else if (lang === 'english') {
-                    streams.push({
+                    englishStreams.push({
                       id: 'salt-english',
                       name: 'English Server HD',
                       language: 'english',
@@ -1315,7 +1327,7 @@ async function resolveAnimeSaltStreams(
             // Ignore malformed base64
           }
         } else if (src.includes('ravok.buzz')) {
-          streams.push({
+          multiStreams.push({
             id: 'salt-multi',
             name: 'Multi-Audio (Hindi / Eng)',
             language: 'hindi',
@@ -1325,16 +1337,17 @@ async function resolveAnimeSaltStreams(
         }
       }
 
-      if (streams.length > 0) break;
+      if (hindiStreams.length > 0 || multiStreams.length > 0 || englishStreams.length > 0) break;
     } catch {
       // Try next ep URL
     }
   }
 
-  return streams;
+  return [...hindiStreams, ...multiStreams, ...englishStreams];
 }
 
 app.get('/api/anime/streams', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   const title = String(req.query.title || '');
   const romaji = String(req.query.romaji || '');
   const ep = Math.max(1, Number(req.query.ep) || 1);
@@ -1342,7 +1355,7 @@ app.get('/api/anime/streams', async (req, res) => {
   const absEp = Math.max(0, Number(req.query.absEp) || 0);
   const isMovie = req.query.isMovie === 'true';
 
-  const cacheKey = `anime:streams:v2:${title}:${romaji}:s${season}:e${ep}:a${absEp}:${isMovie}`;
+  const cacheKey = `anime:streams:v3:${title}:${romaji}:s${season}:e${ep}:a${absEp}:${isMovie}`;
   const cached = getCached(cacheKey);
   if (cached) {
     res.json(cached);
@@ -2299,8 +2312,8 @@ interface ServerPaymentRecord {
   updatedAt: number;
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://pslxlbcvvjenuhochzvh.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_23NfXkRXGdqiBxwtJu2ymA_UoCAWuvu';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ucmdypeujpesnhetvshg.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_sMODQ5GYPITHdSp04kyuTQ_aXS9Syuk';
 
 function readPaymentsStore(): ServerPaymentRecord[] {
   try {

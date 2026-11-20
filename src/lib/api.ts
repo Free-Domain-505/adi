@@ -332,10 +332,19 @@ export async function fetchAnimeStreams(opts: {
     ...(opts.absEp ? { absEp: String(opts.absEp) } : {}),
     isMovie: String(Boolean(opts.isMovie)),
   });
-  return cachedCall(`streams:${params.toString()}`, 10 * 60 * 1000, async () => {
+  return cachedCall(`streams:${params.toString()}:v2`, 10 * 60 * 1000, async () => {
     const json = await fetchApiJson<{ streams?: ResolvedStream[] }>(`/api/anime/streams?${params.toString()}`);
     if (Array.isArray(json?.streams) && json.streams.length > 0) {
       return json.streams;
+    }
+    const remoteBase = String(import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
+    if (remoteBase) {
+      const remoteJson = await fetchApiJson<{ streams?: ResolvedStream[] }>(
+        `${remoteBase}/api/anime/streams?${params.toString()}`
+      );
+      if (Array.isArray(remoteJson?.streams) && remoteJson.streams.length > 0) {
+        return remoteJson.streams;
+      }
     }
     return [];
   });

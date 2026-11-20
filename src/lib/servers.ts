@@ -5,12 +5,14 @@ export interface AnimeEmbedServer {
   name: string;
   note: string;
   language: 'english';
+  supportsHindiHint?: boolean;
   buildUrl: (ctx: {
     tmdbId: number;
     episode: number;
     season?: number;
     ids: IdMapping;
     isMovie?: boolean;
+    language?: 'hindi' | 'english';
   }) => string | null;
 }
 
@@ -45,14 +47,16 @@ export const ANIME_ENGLISH_SERVERS: AnimeEmbedServer[] = [
   {
     id: 'srv-3',
     name: 'SERVER 3',
-    note: 'Cloud HD Mirror',
+    note: 'Cloud HD Multi-Audio Mirror',
     language: 'english',
-    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
+    supportsHindiHint: true,
+    buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie, language }) => {
       const ref = ids.themoviedb || tmdbId || ids.imdb;
       if (!ref) return null;
+      const langQs = language === 'hindi' ? '?lang=hi' : '';
       return isMovie
-        ? `https://vidsrc.to/embed/movie/${ref}`
-        : `https://vidsrc.to/embed/tv/${ref}/${season}/${episode}`;
+        ? `https://vidsrc.to/embed/movie/${ref}${langQs}`
+        : `https://vidsrc.to/embed/tv/${ref}/${season}/${episode}${langQs}`;
     },
   },
   {
@@ -71,8 +75,9 @@ export const ANIME_ENGLISH_SERVERS: AnimeEmbedServer[] = [
   {
     id: 'srv-5',
     name: 'SERVER 5',
-    note: 'Backup HD Mirror',
+    note: 'Multi-Lang Backup Mirror',
     language: 'english',
+    supportsHindiHint: true,
     buildUrl: ({ tmdbId, episode, season = 1, ids, isMovie }) => {
       const ref = ids.themoviedb || tmdbId || ids.imdb;
       if (!ref) return null;

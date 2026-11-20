@@ -442,7 +442,6 @@ export default function WatchPage() {
               key={activeEmbedUrl}
               src={activeEmbedUrl}
               title={`${title} Episode ${currentEp}`}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media; accelerometer; gyroscope; clipboard-write"
               allowFullScreen
               referrerPolicy="no-referrer"

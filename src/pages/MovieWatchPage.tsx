@@ -326,7 +326,6 @@ export default function MovieWatchPage() {
               key={embedUrl}
               src={embedUrl}
               title={meta?.title || 'Movie Player'}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
               allow="autoplay; fullscreen; picture-in-picture; encrypted-media; accelerometer; gyroscope; clipboard-write"
               allowFullScreen
               referrerPolicy="no-referrer"

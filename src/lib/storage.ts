@@ -16,6 +16,7 @@ import {
   verifyActiveSupabaseUser,
   type SupabaseUser,
 } from './supabase';
+import { safeParseJson } from './hybridClient';
 
 const WATCHLIST_KEY = 'aadhi:watchlist:v1';
 const HISTORY_KEY = 'aadhi:history:v1';
@@ -115,9 +116,9 @@ export async function verifyAdminPassword(password: string): Promise<string> {
     },
     body: JSON.stringify({ password }),
   });
-  const json = await res.json().catch(() => ({}));
+  const json = await safeParseJson<{ adminPassToken?: string; error?: string }>(res);
   if (!res.ok || !json?.adminPassToken) {
-    throw new Error(json?.error || 'Incorrect admin password.');
+    throw new Error(json?.error || 'Incorrect admin password or backend server unavailable.');
   }
   const passToken = String(json.adminPassToken);
   setAdminPassToken(passToken);
@@ -137,7 +138,7 @@ export async function checkAdminPassSession(): Promise<boolean> {
         'x-admin-pass': passToken,
       },
     });
-    const json = await res.json().catch(() => ({}));
+    const json = await safeParseJson<{ valid?: boolean }>(res);
     if (!json?.valid) {
       clearAdminPassToken();
       return false;
@@ -509,7 +510,12 @@ async function syncServerSubscriptionStatus() {
       return;
     }
     if (!res.ok) return;
-    const json = await res.json();
+    const json = await safeParseJson<{
+      blocked?: boolean;
+      blockedReason?: string;
+      subscription?: UserSubscription;
+    }>(res);
+    if (!json) return;
     if (json?.blocked) {
       blockedCache = {
         blocked: true,
@@ -767,9 +773,9 @@ export async function submitPaymentConfirmation(params: {
     }),
   });
 
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(json?.error || 'Failed to submit payment confirmation.');
+  const json = await safeParseJson<{ error?: string }>(res);
+  if (!res.ok || !json) {
+    throw new Error(json?.error || 'Payment submission requires the full-stack server runtime.');
   }
 
   const now = Date.now();
@@ -807,8 +813,8 @@ export async function approvePaymentRequest(reqItem: PaymentRequest, adminNote?:
     },
     body: JSON.stringify({ adminNote }),
   });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
+  const json = await safeParseJson<{ error?: string }>(res);
+  if (!res.ok || !json) {
     throw new Error(json?.error || 'Approval failed.');
   }
 }
@@ -830,8 +836,8 @@ export async function cancelPaymentRequest(reqItem: PaymentRequest, adminNote?: 
     },
     body: JSON.stringify({ adminNote }),
   });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
+  const json = await safeParseJson<{ error?: string }>(res);
+  if (!res.ok || !json) {
     throw new Error(json?.error || 'Rejection failed.');
   }
 }

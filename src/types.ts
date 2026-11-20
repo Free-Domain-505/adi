@@ -9,6 +9,7 @@ export interface AnimeTitle {
 export interface AnimeMedia {
   id: number;
   idMal?: number | null;
+  tmdbId?: number | null;
   title: AnimeTitle;
   coverImage?: {
     extraLarge?: string | null;

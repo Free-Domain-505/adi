@@ -122,7 +122,7 @@ export function HeroCarousel({ items, loading, onPlayTrailer }: HeroCarouselProp
           <div className="mt-3">
             <TmdbLogoTitle
               title={title}
-              id={current.id}
+              tmdbId={current.tmdbId}
               initialLogo={current.logo}
               className="font-display text-3xl font-extrabold tracking-tight text-ink sm:text-5xl"
               imgClassName="max-h-20 sm:max-h-24 md:max-h-28 max-w-[280px] sm:max-w-md md:max-w-xl object-contain object-left drop-shadow-2xl"

@@ -9,6 +9,23 @@ import type {
   NovelDetail,
   NovelItem,
 } from '../types';
+import {
+  animeDetailDirect,
+  animeEpisodesDirect,
+  animeHomeDirect,
+  browseAnimeDirect,
+  donghuaHomeDirect,
+  fetchApiJson,
+  mangaChaptersDirect,
+  mangaDetailDirect,
+  mangaHomeDirect,
+  mangaPagesDirect,
+  safeParseJson,
+  scheduleDirect,
+  searchMangaDirect,
+  tmdbLogoDirect,
+  tmdbSeasonsDirect,
+} from './hybridClient';
 
 export const ANIME_GENRES = [
   'Action',
@@ -98,7 +115,11 @@ async function cachedCall<T>(key: string, ttlMs: number, fn: () => Promise<T>): 
   return promise;
 }
 
-// TMDB-powered Anime and Donghua API Client
+// Hybrid Anime & Donghua API Client:
+// - Home, Featured, Browse, Details, Posters, Banners -> AniList + MAL/Jikan
+// - Seasons & Episodes -> TMDB (except Jujutsu Kaisen -> AniList + MAL/AniZip)
+// - Logos -> TMDB
+// - Automatic direct browser fallback if hosted statically (e.g. Cloudflare Pages)
 export async function fetchAnimeHome(): Promise<{
   trending: AnimeMedia[];
   season: AnimeMedia[];
@@ -106,10 +127,24 @@ export async function fetchAnimeHome(): Promise<{
   top: AnimeMedia[];
   upcoming: AnimeMedia[];
 }> {
-  return cachedCall('tmdb:anime:home', 10 * 60 * 1000, async () => {
-    const res = await fetch('/api/tmdb/anime/home');
-    if (!res.ok) throw new Error('Failed to fetch anime from TMDB');
-    return res.json();
+  return cachedCall('hybrid:anime:home:v3', 10 * 60 * 1000, async () => {
+    const serverData = await fetchApiJson<{
+      trending?: AnimeMedia[];
+      season?: AnimeMedia[];
+      popular?: AnimeMedia[];
+      top?: AnimeMedia[];
+      upcoming?: AnimeMedia[];
+    }>('/api/tmdb/anime/home');
+    if (serverData?.trending && serverData.trending.length > 0) {
+      return {
+        trending: serverData.trending,
+        season: serverData.season || [],
+        popular: serverData.popular || [],
+        top: serverData.top || [],
+        upcoming: serverData.upcoming || [],
+      };
+    }
+    return animeHomeDirect();
   });
 }
 
@@ -119,36 +154,38 @@ export async function fetchDonghuaHome(): Promise<{
   top: AnimeMedia[];
   airing: AnimeMedia[];
 }> {
-  return cachedCall('tmdb:donghua:home', 10 * 60 * 1000, async () => {
-    const res = await fetch('/api/tmdb/donghua/home');
-    if (!res.ok) throw new Error('Failed to fetch donghua from TMDB');
-    return res.json();
+  return cachedCall('hybrid:donghua:home:v3', 10 * 60 * 1000, async () => {
+    const serverData = await fetchApiJson<{
+      trending?: AnimeMedia[];
+      popular?: AnimeMedia[];
+      top?: AnimeMedia[];
+      airing?: AnimeMedia[];
+    }>('/api/tmdb/donghua/home');
+    if (serverData?.trending && serverData.trending.length > 0) {
+      return {
+        trending: serverData.trending,
+        popular: serverData.popular || [],
+        top: serverData.top || [],
+        airing: serverData.airing || [],
+      };
+    }
+    return donghuaHomeDirect();
   });
 }
 
 export async function fetchLatestAiringEpisodes(): Promise<AiringItem[]> {
-  return cachedCall('tmdb:latest:airing', 15 * 60 * 1000, async () => {
-    try {
-      const res = await fetch('/api/tmdb/schedule');
-      if (res.ok) {
-        const data = await res.json();
-        return data.schedules || [];
-      }
-    } catch {}
-    return [];
+  return cachedCall('hybrid:latest:airing:v3', 15 * 60 * 1000, async () => {
+    const data = await fetchApiJson<{ schedules?: AiringItem[] }>('/api/tmdb/schedule');
+    if (data?.schedules && data.schedules.length > 0) return data.schedules;
+    return scheduleDirect();
   });
 }
 
 export async function fetchWeeklySchedule(): Promise<AiringItem[]> {
-  return cachedCall('tmdb:weekly:schedule', 30 * 60 * 1000, async () => {
-    try {
-      const res = await fetch('/api/tmdb/schedule');
-      if (res.ok) {
-        const data = await res.json();
-        return data.schedules || [];
-      }
-    } catch {}
-    return [];
+  return cachedCall('hybrid:weekly:schedule:v3', 30 * 60 * 1000, async () => {
+    const data = await fetchApiJson<{ schedules?: AiringItem[] }>('/api/tmdb/schedule');
+    if (data?.schedules && data.schedules.length > 0) return data.schedules;
+    return scheduleDirect();
   });
 }
 
@@ -167,32 +204,41 @@ export async function browseAnime(opts: {
   const params = new URLSearchParams();
   if (opts.search) params.set('q', opts.search);
   if (opts.page) params.set('page', String(opts.page));
+  if (opts.perPage) params.set('perPage', String(opts.perPage));
   if (opts.genre) params.set('genre', opts.genre);
+  if (opts.format) params.set('format', opts.format);
+  if (opts.status) params.set('status', opts.status);
+  if (opts.season) params.set('season', opts.season);
+  if (opts.year) params.set('year', String(opts.year));
   if (opts.sort) params.set('sort', opts.sort);
   if (opts.countryOfOrigin) params.set('country', opts.countryOfOrigin);
 
-  return cachedCall(`tmdb:browse:${params.toString()}`, 5 * 60 * 1000, async () => {
-    const res = await fetch(`/api/tmdb/anime/browse?${params.toString()}`);
-    if (!res.ok) throw new Error('Failed to browse anime from TMDB');
-    const data = await res.json();
-    return {
-      items: data.items || [],
-      hasNextPage: Boolean(data.hasNextPage),
-    };
+  return cachedCall(`hybrid:browse:${params.toString()}:v3`, 5 * 60 * 1000, async () => {
+    const data = await fetchApiJson<{ items?: AnimeMedia[]; hasNextPage?: boolean }>(
+      `/api/tmdb/anime/browse?${params.toString()}`
+    );
+    if (data && Array.isArray(data.items)) {
+      return {
+        items: data.items,
+        hasNextPage: Boolean(data.hasNextPage),
+      };
+    }
+    return browseAnimeDirect(opts);
   });
 }
 
 export async function fetchAnimeDetail(id: number): Promise<AnimeMedia> {
-  return cachedCall(`tmdb:detail:${id}:v2`, 15 * 60 * 1000, async () => {
-    const res = await fetch(`/api/tmdb/anime/detail/${id}`);
-    if (!res.ok) throw new Error('Failed to fetch anime details from TMDB');
-    return res.json();
+  return cachedCall(`hybrid:detail:${id}:v3`, 15 * 60 * 1000, async () => {
+    const data = await fetchApiJson<AnimeMedia>(`/api/tmdb/anime/detail/${id}`);
+    if (data?.id) return data;
+    return animeDetailDirect(id);
   });
 }
 
 export async function fetchAnimeEpisodes(
   id: number,
-  season = 1
+  season = 1,
+  title?: string
 ): Promise<{
   episodes: EpisodeInfo[];
   total: number;
@@ -200,25 +246,28 @@ export async function fetchAnimeEpisodes(
   anilistId?: number;
   malId?: number;
   absoluteOffset?: number;
-  seasons?: { number: number; name: string; episodes: number; poster?: string | null }[];
+  seasons?: { number: number; name: string; episodes: number; poster?: string | null; anilistId?: number; malId?: number }[];
 }> {
-  return cachedCall(`tmdb:episodes:${id}:s${season}:v2`, 15 * 60 * 1000, async () => {
-    const res = await fetch(`/api/tmdb/tv/${id}/season/${season}`);
-    if (!res.ok) {
-      // Fallback to legacy endpoint if season route fails
-      const fallbackRes = await fetch(`/api/anime/${id}/episodes?season=${season}`);
-      if (fallbackRes.ok) return fallbackRes.json();
-      throw new Error('Failed to load season episodes from TMDB');
+  const titleQs = title ? `?title=${encodeURIComponent(title)}` : '';
+  return cachedCall(`hybrid:episodes:${id}:s${season}:v3`, 15 * 60 * 1000, async () => {
+    const data = await fetchApiJson<any>(`/api/tmdb/tv/${id}/season/${season}${titleQs}`);
+    if (data && Array.isArray(data.episodes)) {
+      return {
+        episodes: data.episodes || [],
+        total: data.total || data.episodes.length || 0,
+        ids: data.ids || { themoviedb: id },
+        anilistId: data.anilistId || undefined,
+        malId: data.malId || undefined,
+        absoluteOffset: Number(data.absoluteOffset) || 0,
+        seasons: Array.isArray(data.seasons) ? data.seasons : undefined,
+      };
     }
-    const data = await res.json();
-    return {
-      episodes: data.episodes || [],
-      total: data.total || data.episodes?.length || 0,
-      ids: data.ids || { themoviedb: id },
-      anilistId: data.anilistId || undefined,
-      malId: data.malId || undefined,
-      absoluteOffset: Number(data.absoluteOffset) || 0,
-    };
+    const legacyQs = title ? `&title=${encodeURIComponent(title)}` : '';
+    const legacy = await fetchApiJson<any>(`/api/anime/${id}/episodes?season=${season}${legacyQs}`);
+    if (legacy && Array.isArray(legacy.episodes)) {
+      return legacy;
+    }
+    return animeEpisodesDirect(id, season, title);
   });
 }
 
@@ -228,14 +277,9 @@ export async function fetchTmdbLogo(title: string, id?: number, type: 'tv' | 'mo
   if (title) params.set('title', title);
   params.set('type', type);
   return cachedCall(`tmdb:logo:${params.toString()}`, 24 * 60 * 60 * 1000, async () => {
-    try {
-      const res = await fetch(`/api/tmdb/logo?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        return data.logo || null;
-      }
-    } catch {}
-    return null;
+    const data = await fetchApiJson<{ logo?: string | null }>(`/api/tmdb/logo?${params.toString()}`);
+    if (data && 'logo' in data) return data.logo || null;
+    return tmdbLogoDirect(title, id, type);
   });
 }
 
@@ -247,11 +291,11 @@ export async function fetchTmdbSeasons(
   if (id) params.set('id', String(id));
   if (title) params.set('title', title);
   return cachedCall(`tmdb:seasons:${params.toString()}`, 24 * 60 * 60 * 1000, async () => {
-    try {
-      const res = await fetch(`/api/tmdb/seasons?${params.toString()}`);
-      if (res.ok) return res.json();
-    } catch {}
-    return { id: id || null, seasons: [] };
+    const data = await fetchApiJson<{ id: number | null; seasons: { number: number; name: string; episodes: number; poster?: string | null }[] }>(
+      `/api/tmdb/seasons?${params.toString()}`
+    );
+    if (data && Array.isArray(data.seasons)) return data;
+    return tmdbSeasonsDirect(id, title);
   });
 }
 
@@ -289,19 +333,10 @@ export async function fetchAnimeStreams(opts: {
     isMovie: String(Boolean(opts.isMovie)),
   });
   return cachedCall(`streams:${params.toString()}`, 10 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/anime/streams?${params.toString()}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (Array.isArray(json?.streams) && json.streams.length > 0) {
-          return json.streams;
-        }
-      }
-    } catch {
-      // Fall through
+    const json = await fetchApiJson<{ streams?: ResolvedStream[] }>(`/api/anime/streams?${params.toString()}`);
+    if (Array.isArray(json?.streams) && json.streams.length > 0) {
+      return json.streams;
     }
-    // Return empty list so player smoothly falls back to verified ANIME_ENGLISH_SERVERS (VidLink, ZokoAnime, 2Embed, VidSrc)
     return [];
   });
 }
@@ -323,13 +358,8 @@ export async function fetchDirectAnimeStreams(opts: {
     format: opts.format || 'TV',
   });
   return cachedCall(`direct:anime:${params.toString()}`, 8 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/anime/direct-streams?${params.toString()}`);
-      if (r.ok) {
-        const json = await r.json();
-        if (Array.isArray(json?.streams)) return json.streams;
-      }
-    } catch {}
+    const json = await fetchApiJson<{ streams?: DirectVideoStream[] }>(`/api/anime/direct-streams?${params.toString()}`);
+    if (Array.isArray(json?.streams)) return json.streams;
     return [];
   });
 }
@@ -351,80 +381,95 @@ export async function fetchDirectMovieStreams(opts: {
     ...(opts.year ? { year: opts.year } : {}),
   });
   return cachedCall(`direct:movies:${params.toString()}`, 8 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/movies/direct-streams?${params.toString()}`);
-      if (r.ok) {
-        const json = await r.json();
-        return {
-          streams: Array.isArray(json?.streams) ? json.streams : [],
-          subtitles: Array.isArray(json?.subtitles) ? json.subtitles : [],
-        };
-      }
-    } catch {}
+    const json = await fetchApiJson<{
+      streams?: DirectVideoStream[];
+      subtitles?: { file: string; label: string; default?: boolean }[];
+    }>(`/api/movies/direct-streams?${params.toString()}`);
+    if (json) {
+      return {
+        streams: Array.isArray(json.streams) ? json.streams : [],
+        subtitles: Array.isArray(json.subtitles) ? json.subtitles : [],
+      };
+    }
     return { streams: [], subtitles: [] };
   });
 }
 
-// Manga & Manhwa
+// Manga & Manhwa (safe JSON check + direct MangaDex fallback for static hosting)
 export async function fetchMangaHome(kind: 'manga' | 'manhwa' = 'manga'): Promise<{
   trending: MangaItem[];
   latest: MangaItem[];
   topRated: MangaItem[];
 }> {
-  return cachedCall(`manga:home:${kind}:v2`, 5 * 60 * 1000, async () => {
-    const r = await fetch(`/api/manga/home?kind=${kind}`);
-    const json = await r.json();
-    if (r.ok && json?.trending) return json;
-    throw new Error(json?.error || 'Failed to load catalog');
+  return cachedCall(`manga:home:${kind}:v3`, 5 * 60 * 1000, async () => {
+    const json = await fetchApiJson<{
+      trending?: MangaItem[];
+      latest?: MangaItem[];
+      topRated?: MangaItem[];
+    }>(`/api/manga/home?kind=${kind}`);
+    if (json?.trending) {
+      return {
+        trending: json.trending,
+        latest: json.latest || [],
+        topRated: json.topRated || [],
+      };
+    }
+    return mangaHomeDirect(kind);
   });
 }
 
 export async function searchManga(q: string, kind: '' | 'manga' | 'manhwa' = '', offset = 0): Promise<{ results: MangaItem[]; total: number }> {
   const params = new URLSearchParams({ q, offset: String(offset), limit: '24' });
   if (kind) params.set('kind', kind);
-  return cachedCall(`manga:search:${params.toString()}:v2`, 3 * 60 * 1000, async () => {
-    const r = await fetch(`/api/manga/search?${params.toString()}`);
-    const json = await r.json();
-    if (r.ok && json?.results) return json;
-    return { results: [], total: 0 };
+  return cachedCall(`manga:search:${params.toString()}:v3`, 3 * 60 * 1000, async () => {
+    const json = await fetchApiJson<{ results?: MangaItem[]; total?: number }>(
+      `/api/manga/search?${params.toString()}`
+    );
+    if (json?.results) {
+      return { results: json.results, total: json.total || json.results.length };
+    }
+    return searchMangaDirect(q, kind, offset);
   });
 }
 
 export async function fetchMangaDetail(id: string): Promise<MangaItem> {
-  return cachedCall(`manga:detail:${id}`, 10 * 60 * 1000, async () => {
-    const r = await fetch(`/api/manga/detail/${encodeURIComponent(id)}`);
-    const json = await r.json();
-    if (!r.ok) throw new Error(json?.error || 'Manga not found');
-    return json;
+  return cachedCall(`manga:detail:${id}:v2`, 10 * 60 * 1000, async () => {
+    const json = await fetchApiJson<MangaItem>(`/api/manga/detail/${encodeURIComponent(id)}`);
+    if (json?.id) return json;
+    return mangaDetailDirect(id);
   });
 }
 
 export async function fetchMangaChapters(id: string, offset = 0): Promise<{ chapters: MangaChapter[]; total: number }> {
-  return cachedCall(`manga:chapters:${id}:${offset}:v2`, 5 * 60 * 1000, async () => {
-    const r = await fetch(`/api/manga/chapters/${encodeURIComponent(id)}?offset=${offset}`);
-    const json = await r.json();
-    if (!r.ok) throw new Error(json?.error || 'Failed to load chapters');
-    return json;
+  return cachedCall(`manga:chapters:${id}:${offset}:v3`, 5 * 60 * 1000, async () => {
+    const json = await fetchApiJson<{ chapters?: MangaChapter[]; total?: number }>(
+      `/api/manga/chapters/${encodeURIComponent(id)}?offset=${offset}`
+    );
+    if (json?.chapters) {
+      return { chapters: json.chapters, total: json.total || json.chapters.length };
+    }
+    return mangaChaptersDirect(id, offset);
   });
 }
 
 export async function fetchMangaPages(chapterId: string): Promise<{ pages: { index: number; url: string }[] }> {
-  return cachedCall(`manga:pages:${chapterId}:v2`, 10 * 60 * 1000, async () => {
-    const r = await fetch(`/api/manga/pages/${encodeURIComponent(chapterId)}`);
-    const json = await r.json();
-    if (!r.ok) throw new Error(json?.error || 'Failed to load chapter pages');
-    return json;
+  return cachedCall(`manga:pages:${chapterId}:v3`, 10 * 60 * 1000, async () => {
+    const json = await fetchApiJson<{ pages?: { index: number; url: string }[] }>(
+      `/api/manga/pages/${encodeURIComponent(chapterId)}`
+    );
+    if (json?.pages) return { pages: json.pages };
+    return mangaPagesDirect(chapterId);
   });
 }
 
-// Light Novels
+// Light Novels (uses safe JSON parsing so static Cloudflare hosting never throws Unexpected token '<')
 export async function fetchNovelHome(): Promise<{ popular: NovelItem[]; latest: NovelItem[]; rankings: NovelItem[] }> {
-  return cachedCall('novel:home:v2', 10 * 60 * 1000, async () => {
+  return cachedCall('novel:home:v3', 10 * 60 * 1000, async () => {
     for (const source of ['novelfire', 'lnori']) {
       try {
         const r = await fetch(`/api/streaming/novel/home?source=${source}`);
-        const json = await r.json();
-        if (r.ok && ((json.popular && json.popular.length > 0) || (json.latest && json.latest.length > 0))) {
+        const json = await safeParseJson<any>(r);
+        if (r.ok && json && ((json.popular && json.popular.length > 0) || (json.latest && json.latest.length > 0))) {
           return {
             popular: json.popular || [],
             latest: json.latest || [],
@@ -435,37 +480,38 @@ export async function fetchNovelHome(): Promise<{ popular: NovelItem[]; latest: 
         // try next source
       }
     }
-    throw new Error('Novel catalog unavailable right now');
+    throw new Error('Light novel catalog requires the full-stack server runtime.');
   });
 }
 
 export async function searchNovels(q: string): Promise<{ results: NovelItem[] }> {
-  return cachedCall(`novel:search:${q.toLowerCase()}:v2`, 5 * 60 * 1000, async () => {
-    const source = 'novelfire';
-    const r = await fetch(`/api/streaming/novel/search?source=${source}&q=${encodeURIComponent(q)}`);
-    const json = await r.json();
-    if (r.ok && Array.isArray(json.results) && json.results.length > 0) {
+  return cachedCall(`novel:search:${q.toLowerCase()}:v3`, 5 * 60 * 1000, async () => {
+    const json = await fetchApiJson<{ results?: NovelItem[] }>(
+      `/api/streaming/novel/search?source=novelfire&q=${encodeURIComponent(q)}`
+    );
+    if (Array.isArray(json?.results) && json.results.length > 0) {
       return { results: json.results };
     }
-    const r2 = await fetch(`/api/streaming/novel/search?source=lnori&q=${encodeURIComponent(q)}`);
-    const json2 = await r2.json().catch(() => ({}));
-    return { results: json2.results || [] };
+    const json2 = await fetchApiJson<{ results?: NovelItem[] }>(
+      `/api/streaming/novel/search?source=lnori&q=${encodeURIComponent(q)}`
+    );
+    return { results: json2?.results || [] };
   });
 }
 
 export async function fetchNovelDetail(slug: string): Promise<NovelDetail> {
   const source = slug.includes('~') ? 'lnori' : 'novelfire';
-  return cachedCall(`novel:detail:${source}:${slug}:v2`, 10 * 60 * 1000, async () => {
+  return cachedCall(`novel:detail:${source}:${slug}:v3`, 10 * 60 * 1000, async () => {
     const qs = `source=${source}&slug=${encodeURIComponent(slug)}`;
-    const [detailRes, chaptersRes] = await Promise.all([
-      fetch(`/api/streaming/novel/detail?${qs}`),
-      fetch(`/api/streaming/novel/chapters?${qs}`),
+    const [detailJson, chaptersJson] = await Promise.all([
+      fetchApiJson<any>(`/api/streaming/novel/detail?${qs}`),
+      fetchApiJson<any>(`/api/streaming/novel/chapters?${qs}`),
     ]);
-    const detailJson = await detailRes.json();
-    const chaptersJson = await chaptersRes.json();
-    if (!detailRes.ok) throw new Error(detailJson?.error || 'Novel not found');
+    if (!detailJson) {
+      throw new Error('Light novel reader requires the full-stack server runtime.');
+    }
     const d = detailJson.detail || detailJson;
-    const chapters = chaptersJson.chapters || chaptersJson.results || [];
+    const chapters = chaptersJson?.chapters || chaptersJson?.results || [];
     return {
       slug: d.slug || slug,
       title: d.title || 'Untitled',
@@ -492,8 +538,10 @@ export async function fetchNovelChapter(
   const source = slug.includes('~') || chapter.includes('~') ? 'lnori' : 'novelfire';
   const params = new URLSearchParams({ source, novelSlug: slug, chapterSlug: chapter });
   const r = await fetch(`/api/streaming/novel/read?${params}`);
-  const json = await r.json();
-  if (!r.ok && !json?.sourceUrl) throw new Error(json?.error || 'Chapter unavailable');
+  const json = await safeParseJson<any>(r);
+  if (!json || (!r.ok && !json?.sourceUrl)) {
+    throw new Error(json?.error || 'Light novel chapter requires the full-stack server runtime.');
+  }
   return json;
 }
 
@@ -524,23 +572,27 @@ export async function fetchMoviesHome(): Promise<{
   topRatedMovies: MovieItem[];
   topRatedSeries: MovieItem[];
 }> {
-  return cachedCall('movies:home', 10 * 60 * 1000, async () => {
-    try {
-      const r = await fetch('/api/movies/home');
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.popularMovies) return json;
-      }
-    } catch {
-      // Fall through
+  return cachedCall('movies:home:v2', 10 * 60 * 1000, async () => {
+    const serverJson = await fetchApiJson<{
+      popularMovies?: MovieItem[];
+      popularSeries?: MovieItem[];
+      topRatedMovies?: MovieItem[];
+      topRatedSeries?: MovieItem[];
+    }>('/api/movies/home');
+    if (serverJson?.popularMovies) {
+      return {
+        popularMovies: serverJson.popularMovies,
+        popularSeries: serverJson.popularSeries || [],
+        topRatedMovies: serverJson.topRatedMovies || [],
+        topRatedSeries: serverJson.topRatedSeries || [],
+      };
     }
 
     const [topMovies, topSeries, imdbMovies, imdbSeries] = await Promise.all([
-      fetch(`${CINEMETA_URL}/catalog/movie/top.json`).then((r) => r.json()).catch(() => ({ metas: [] })),
-      fetch(`${CINEMETA_URL}/catalog/series/top.json`).then((r) => r.json()).catch(() => ({ metas: [] })),
-      fetch(`${CINEMETA_URL}/catalog/movie/imdbRating.json`).then((r) => r.json()).catch(() => ({ metas: [] })),
-      fetch(`${CINEMETA_URL}/catalog/series/imdbRating.json`).then((r) => r.json()).catch(() => ({ metas: [] })),
+      fetchApiJson<any>(`${CINEMETA_URL}/catalog/movie/top.json`),
+      fetchApiJson<any>(`${CINEMETA_URL}/catalog/series/top.json`),
+      fetchApiJson<any>(`${CINEMETA_URL}/catalog/movie/imdbRating.json`),
+      fetchApiJson<any>(`${CINEMETA_URL}/catalog/series/imdbRating.json`),
     ]);
 
     return {
@@ -562,17 +614,9 @@ export async function browseMovies(opts: {
   if (opts.sort) params.set('sort', opts.sort);
   if (opts.genre) params.set('genre', opts.genre);
   if (opts.skip) params.set('skip', String(opts.skip));
-  return cachedCall(`movies:browse:${params.toString()}`, 5 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/movies/browse?${params.toString()}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.results) return json;
-      }
-    } catch {
-      // Fall through
-    }
+  return cachedCall(`movies:browse:${params.toString()}:v2`, 5 * 60 * 1000, async () => {
+    const serverJson = await fetchApiJson<{ results?: MovieItem[] }>(`/api/movies/browse?${params.toString()}`);
+    if (serverJson?.results) return { results: serverJson.results };
 
     const type = opts.type === 'tv' ? 'series' : 'movie';
     const catalog = opts.sort === 'rating' ? 'imdbRating' : 'top';
@@ -581,27 +625,19 @@ export async function browseMovies(opts: {
     if (opts.skip && opts.skip > 0) extra.push(`skip=${opts.skip}`);
     const suffix = extra.length ? `/${extra.join('&')}.json` : '.json';
     const url = `${CINEMETA_URL}/catalog/${type}/${catalog}${suffix}`;
-    const json = await fetch(url).then((r) => r.json()).catch(() => ({ metas: [] }));
+    const json = await fetchApiJson<any>(url);
     return { results: (json?.metas || []).map(mapCinemetaItem) };
   });
 }
 
 export async function searchMovies(q: string): Promise<{ results: MovieItem[] }> {
-  return cachedCall(`movies:search:${q.toLowerCase()}`, 5 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/movies/search?q=${encodeURIComponent(q)}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.results) return json;
-      }
-    } catch {
-      // Fall through
-    }
+  return cachedCall(`movies:search:${q.toLowerCase()}:v2`, 5 * 60 * 1000, async () => {
+    const serverJson = await fetchApiJson<{ results?: MovieItem[] }>(`/api/movies/search?q=${encodeURIComponent(q)}`);
+    if (serverJson?.results) return { results: serverJson.results };
 
     const [mRes, sRes] = await Promise.all([
-      fetch(`${CINEMETA_URL}/catalog/movie/top/search=${encodeURIComponent(q)}.json`).then((r) => r.json()).catch(() => ({ metas: [] })),
-      fetch(`${CINEMETA_URL}/catalog/series/top/search=${encodeURIComponent(q)}.json`).then((r) => r.json()).catch(() => ({ metas: [] })),
+      fetchApiJson<any>(`${CINEMETA_URL}/catalog/movie/top/search=${encodeURIComponent(q)}.json`),
+      fetchApiJson<any>(`${CINEMETA_URL}/catalog/series/top/search=${encodeURIComponent(q)}.json`),
     ]);
 
     const movies = (mRes?.metas || []).map(mapCinemetaItem);
@@ -617,21 +653,12 @@ export async function searchMovies(q: string): Promise<{ results: MovieItem[] }>
 }
 
 export async function fetchMovieMeta(type: 'movie' | 'tv', id: string): Promise<MovieItem> {
-  return cachedCall(`movies:meta:${type}:${id}`, 15 * 60 * 1000, async () => {
-    try {
-      const r = await fetch(`/api/movies/meta/${type}/${encodeURIComponent(id)}`);
-      const ct = r.headers.get('content-type') || '';
-      if (r.ok && ct.includes('application/json')) {
-        const json = await r.json();
-        if (json?.id) return json;
-      }
-    } catch {
-      // Fall through
-    }
+  return cachedCall(`movies:meta:${type}:${id}:v2`, 15 * 60 * 1000, async () => {
+    const serverJson = await fetchApiJson<MovieItem>(`/api/movies/meta/${type}/${encodeURIComponent(id)}`);
+    if (serverJson?.id) return serverJson;
 
     const cinemetaType = type === 'tv' ? 'series' : 'movie';
-    const r = await fetch(`${CINEMETA_URL}/meta/${cinemetaType}/${encodeURIComponent(id)}.json`);
-    const json = await r.json();
+    const json = await fetchApiJson<any>(`${CINEMETA_URL}/meta/${cinemetaType}/${encodeURIComponent(id)}.json`);
     const m = json?.meta;
     if (!m) throw new Error('Title not found');
     const base = mapCinemetaItem(m);
@@ -657,4 +684,3 @@ export async function fetchMovieMeta(type: 'movie' | 'tv', id: string): Promise<
     };
   });
 }
-

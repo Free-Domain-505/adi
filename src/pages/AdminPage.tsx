@@ -29,6 +29,7 @@ import {
   verifyAdminPassword,
 } from '../lib/storage';
 import { HubBar } from '../components/HubBar';
+import { safeParseJson } from '../lib/hybridClient';
 
 export default function AdminPage() {
   const { user, authReady } = useAuth();
@@ -100,7 +101,7 @@ export default function AdminPage() {
         return;
       }
       if (r.ok) {
-        const json = await r.json();
+        const json = await safeParseJson<{ requests?: any[] }>(r);
         if (Array.isArray(json?.requests)) {
           const mapped: PaymentRequest[] = json.requests.map((d: any) => ({
             id: String(d.id || ''),

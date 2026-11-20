@@ -63,11 +63,14 @@ export default function DetailsPage() {
         const firstSeason = availableSeasons[0]?.number || 1;
         setSelectedSeason(firstSeason);
 
-        return fetchAnimeEpisodes(animeId, firstSeason);
+        return fetchAnimeEpisodes(animeId, firstSeason, pickTitle(detail.title));
       })
       .then((epData) => {
         if (!cancelled && epData) {
           setEpisodes(epData.episodes || []);
+          if (Array.isArray(epData.seasons) && epData.seasons.length > 0) {
+            setSeasons(epData.seasons.filter((s) => s.number > 0));
+          }
         }
       })
       .catch((err) => {
@@ -88,7 +91,8 @@ export default function DetailsPage() {
     setSelectedSeason(seasonNum);
     setEpisodesLoading(true);
     try {
-      const data = await fetchAnimeEpisodes(animeId, seasonNum);
+      const hintTitle = media ? pickTitle(media.title) : undefined;
+      const data = await fetchAnimeEpisodes(animeId, seasonNum, hintTitle);
       setEpisodes(data.episodes || []);
     } catch {
       // Keep previous episodes if error
@@ -226,7 +230,7 @@ export default function DetailsPage() {
             <div className="py-1">
               <TmdbLogoTitle
                 title={title}
-                id={media.id}
+                tmdbId={media.tmdbId}
                 initialLogo={media.logo}
                 className="font-display text-3xl font-extrabold tracking-tight text-ink sm:text-4xl"
                 imgClassName="max-h-20 sm:max-h-24 md:max-h-28 max-w-[280px] sm:max-w-md md:max-w-lg object-contain object-left drop-shadow-2xl"

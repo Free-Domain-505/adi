@@ -110,12 +110,27 @@ export default function WatchPage() {
         if (cancelled) return;
         setMedia(detail);
         setEpisodes(epData.episodes || []);
-        const validSeasons = (detail.seasons || []).filter((s) => s.number > 0);
+        const validSeasons: {
+          number: number;
+          name: string;
+          episodes: number;
+          poster?: string | null;
+          anilistId?: number;
+          malId?: number;
+        }[] = ((epData.seasons && epData.seasons.length > 0 ? epData.seasons : detail.seasons) || []).filter(
+          (s) => s.number > 0
+        );
         setTmdbSeasons(validSeasons);
         const matchingSeason = validSeasons.find((s) => s.number === currentSeason);
         setSeasonAnilistId(epData.anilistId || matchingSeason?.anilistId);
         setAbsoluteOffset(epData.absoluteOffset || 0);
-        setIds({ themoviedb: animeId });
+        setIds(
+          epData.ids || {
+            themoviedb: detail.tmdbId || animeId,
+            anilist: animeId,
+            mal: detail.idMal || undefined,
+          }
+        );
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load stream');
@@ -230,7 +245,7 @@ export default function WatchPage() {
 
     for (const srv of ANIME_ENGLISH_SERVERS) {
       const url = srv.buildUrl({
-        tmdbId: animeId,
+        tmdbId: ids.themoviedb || media?.tmdbId || animeId,
         episode: tmdbEpForEmbed,
         season: tmdbSeasonForEmbed,
         ids,

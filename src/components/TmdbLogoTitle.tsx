@@ -3,7 +3,7 @@ import { fetchTmdbLogo } from '../lib/api';
 
 interface TmdbLogoTitleProps {
   title: string;
-  id?: number | string;
+  tmdbId?: number | null;
   initialLogo?: string | null;
   className?: string;
   imgClassName?: string;
@@ -11,7 +11,7 @@ interface TmdbLogoTitleProps {
 
 export function TmdbLogoTitle({
   title,
-  id,
+  tmdbId,
   initialLogo,
   className = '',
   imgClassName = 'max-h-16 sm:max-h-20 md:max-h-24 max-w-[280px] sm:max-w-md md:max-w-lg object-contain object-left drop-shadow-2xl',
@@ -32,7 +32,7 @@ export function TmdbLogoTitle({
     setLogo(null);
     setFetched(false);
 
-    const numId = id ? Number(id) : undefined;
+    const numId = tmdbId && Number(tmdbId) > 0 ? Number(tmdbId) : undefined;
     fetchTmdbLogo(title, numId)
       .then((url) => {
         if (!cancelled) {
@@ -50,7 +50,7 @@ export function TmdbLogoTitle({
     return () => {
       cancelled = true;
     };
-  }, [id, title, initialLogo]);
+  }, [tmdbId, title, initialLogo]);
 
   if (logo) {
     return (

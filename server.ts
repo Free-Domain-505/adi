@@ -214,45 +214,8 @@ function formatTmdbShow(item: any, logo?: string | null): any {
 // 3. TMDB Endpoints: Logo, Seasons, Episodes, Feeds
 // ---------------------------------------------------------------------------
 
-app.get('/api/tmdb/logo', async (req, res) => {
-  const title = String(req.query.title || '').trim();
-  const id = req.query.id ? Number(req.query.id) : undefined;
-  const type = req.query.type === 'movie' ? 'movie' : 'tv';
-
-  if (id && Number.isFinite(id) && id > 0) {
-    const logoUrl = await getTmdbLogoById(id, type);
-    return res.json({ logo: logoUrl });
-  }
-
-  if (!title) return res.status(400).json({ error: 'Missing title or id' });
-  const cacheKey = `tmdb:logo:title:${title.toLowerCase()}`;
-  const cachedLogo = getCached<{ logo: string | null }>(cacheKey);
-  if (cachedLogo) return res.json(cachedLogo);
-
-  try {
-    const searchRes = await tmdbFetch('/search/multi', {
-      query: title,
-      include_adult: 'false',
-    });
-    const results = searchRes.results || [];
-    const candidates = results.filter((x: any) => x.media_type === 'tv' || x.media_type === 'movie').slice(0, 3);
-    for (const item of candidates) {
-      const logoUrl = await getTmdbLogoById(item.id, item.media_type);
-      if (logoUrl) {
-        const payload = { logo: logoUrl };
-        setCached(cacheKey, payload, 24 * 60 * 60 * 1000);
-        return res.json(payload);
-      }
-    }
-    const payload = { logo: null };
-    setCached(cacheKey, payload, 6 * 60 * 60 * 1000);
-    return res.json(payload);
-  } catch (err) {
-    return res.status(502).json({ error: err instanceof Error ? err.message : 'TMDB logo lookup failed', logo: null });
-  }
-});
-
 const JJK_TMDB_ID = 95479;
+const JJK_ANILIST_IDS = new Set([113415, 145064, 172463]);
 const JJK_FALLBACK_SEASONS = [
   {
     number: 1,
@@ -286,13 +249,40 @@ const JJK_FALLBACK_SEASONS = [
   },
 ];
 
+function isJujutsuKaisen(id?: number, title?: string): boolean {
+  if (id && (id === JJK_TMDB_ID || JJK_ANILIST_IDS.has(id))) return true;
+  if (title && /jujutsu\s*kaisen/i.test(title)) return true;
+  return false;
+}
+
+const ANILIST_CARD_FIELDS = `
+  id
+  idMal
+  title { romaji english native }
+  coverImage { extraLarge large color }
+  bannerImage
+  description(asHtml: false)
+  format
+  status
+  episodes
+  duration
+  season
+  seasonYear
+  averageScore
+  popularity
+  genres
+  countryOfOrigin
+  trailer { id site }
+  nextAiringEpisode { episode airingAt timeUntilAiring }
+`;
+
 async function anilistGraphql<T = any>(query: string, variables: Record<string, any> = {}): Promise<T | null> {
   try {
     const r = await fetch('https://graphql.anilist.co', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ query, variables }),
-      signal: AbortSignal.timeout(7000),
+      signal: AbortSignal.timeout(8500),
     });
     if (!r.ok) return null;
     const j = await r.json().catch(() => null);
@@ -301,6 +291,198 @@ async function anilistGraphql<T = any>(query: string, variables: Record<string, 
     return null;
   }
 }
+
+async function jikanFetch<T = any>(endpoint: string): Promise<T | null> {
+  try {
+    const r = await fetch(`https://api.jikan.moe/v4${endpoint}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(6500),
+    });
+    if (!r.ok) return null;
+    return (await r.json().catch(() => null)) as T | null;
+  } catch {
+    return null;
+  }
+}
+
+function formatJikanAnime(item: any, country = 'JP'): any {
+  const poster =
+    item.images?.webp?.large_image_url ||
+    item.images?.jpg?.large_image_url ||
+    item.images?.jpg?.image_url ||
+    null;
+  return {
+    id: Number(item.mal_id),
+    idMal: Number(item.mal_id),
+    title: {
+      romaji: item.title,
+      english: item.title_english || item.title,
+      native: item.title_japanese || item.title,
+    },
+    coverImage: { extraLarge: poster, large: poster, color: '#f59e0b' },
+    bannerImage: item.trailer?.images?.maximum_image_url || poster,
+    logo: null,
+    description: item.synopsis || '',
+    format: item.type ? String(item.type).toUpperCase() : 'TV',
+    status: item.airing ? 'RELEASING' : 'FINISHED',
+    episodes: item.episodes || null,
+    duration: null,
+    season: item.season ? String(item.season).toUpperCase() : null,
+    seasonYear: item.year || item.aired?.prop?.from?.year || null,
+    averageScore: item.score ? Math.round(Number(item.score) * 10) : null,
+    popularity: item.members || 0,
+    genres: Array.isArray(item.genres) ? item.genres.map((g: any) => g.name) : [],
+    countryOfOrigin: country,
+    trailer: item.trailer?.youtube_id ? { id: item.trailer.youtube_id, site: 'youtube' } : null,
+  };
+}
+
+function cleanTmdbQuery(raw: string): string {
+  return raw
+    .replace(/:\s*Season\s*\d+.*$/i, '')
+    .replace(/\bSeason\s*\d+.*$/i, '')
+    .replace(/\bPart\s*\d+.*$/i, '')
+    .replace(/\bCour\s*\d+.*$/i, '')
+    .replace(/\b\d+(?:st|nd|rd|th)\s+Season.*$/i, '')
+    .replace(/\s+\d+(?:-\d+)?\s*(?:stage|cour|part).*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripTrailingSequelServer(raw: string): string {
+  return cleanTmdbQuery(raw)
+    .replace(/\s+(?:\d+|II|III|IV|V|VI)$/i, '')
+    .trim();
+}
+
+async function resolveTmdbShowByTitle(
+  titles: string[],
+  country?: string | null,
+  preferredType: 'tv' | 'movie' = 'tv'
+): Promise<{ id: number; type: 'tv' | 'movie'; backdrop?: string | null } | null> {
+  const queries = Array.from(
+    new Set(
+      titles
+        .flatMap((t) => [t, cleanTmdbQuery(t), stripTrailingSequelServer(t)])
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2)
+    )
+  );
+  if (queries.length === 0) return null;
+
+  const cacheKey = `tmdb:resolve:${preferredType}:${country || 'any'}:${queries[0].toLowerCase()}`;
+  const cached = getCached<{ id: number; type: 'tv' | 'movie'; backdrop?: string | null } | null>(cacheKey);
+  if (cached !== null) return cached;
+
+  for (const q of queries.slice(0, 3)) {
+    try {
+      const searchRes = await tmdbFetch(preferredType === 'movie' ? '/search/movie' : '/search/tv', {
+        query: q,
+        include_adult: 'false',
+      });
+      const list = searchRes?.results || [];
+      if (list.length > 0) {
+        const scored = list
+          .map((item: any) => {
+            let score = 0;
+            const genres: number[] = Array.isArray(item.genre_ids) ? item.genre_ids : [];
+            if (genres.includes(16)) score += 60;
+            if (country === 'CN' && (item.original_language === 'zh' || (item.origin_country || []).includes('CN'))) score += 30;
+            if (country === 'JP' && (item.original_language === 'ja' || (item.origin_country || []).includes('JP'))) score += 30;
+            const name = String(item.name || item.title || '').toLowerCase();
+            if (name === q.toLowerCase()) score += 40;
+            else if (name.includes(q.toLowerCase())) score += 20;
+            score += Math.min(20, Math.round((item.popularity || 0) / 10));
+            return { item, score };
+          })
+          .sort((a: any, b: any) => b.score - a.score);
+        const top = scored[0]?.item;
+        if (top?.id) {
+          const resolved = {
+            id: Number(top.id),
+            type: preferredType,
+            backdrop: top.backdrop_path ? `https://image.tmdb.org/t/p/w1280${top.backdrop_path}` : null,
+          };
+          setCached(cacheKey, resolved, 24 * 60 * 60 * 1000);
+          return resolved;
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    const multi = await tmdbFetch('/search/multi', { query: queries[0], include_adult: 'false' });
+    const match = (multi?.results || []).find((x: any) => x.media_type === 'tv' || x.media_type === 'movie');
+    if (match?.id) {
+      const resolved = {
+        id: Number(match.id),
+        type: (match.media_type === 'movie' ? 'movie' : 'tv') as 'tv' | 'movie',
+        backdrop: match.backdrop_path ? `https://image.tmdb.org/t/p/w1280${match.backdrop_path}` : null,
+      };
+      setCached(cacheKey, resolved, 24 * 60 * 60 * 1000);
+      return resolved;
+    }
+  } catch {}
+
+  setCached(cacheKey, null, 2 * 60 * 60 * 1000);
+  return null;
+}
+
+async function attachSpotlightLogos(items: any[]): Promise<any[]> {
+  const top = items.slice(0, 8);
+  const enriched = await Promise.all(
+    top.map(async (item) => {
+      const title = item.title?.english || item.title?.romaji || '';
+      if (!title) return item;
+      const prefType: 'tv' | 'movie' = item.format === 'MOVIE' ? 'movie' : 'tv';
+      const resolved = await resolveTmdbShowByTitle([title, item.title?.romaji || ''], item.countryOfOrigin, prefType);
+      const logo = resolved ? await getTmdbLogoById(resolved.id, resolved.type) : null;
+      return {
+        ...item,
+        tmdbId: resolved?.id || item.tmdbId || null,
+        logo: logo || item.logo || null,
+        bannerImage: item.bannerImage || resolved?.backdrop || item.coverImage?.extraLarge || null,
+      };
+    })
+  );
+  return [...enriched, ...items.slice(8)];
+}
+
+function getCurrentAnimeSeason(): { season: 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL'; year: number } {
+  const now = new Date();
+  const m = now.getMonth() + 1;
+  const year = now.getFullYear();
+  if (m <= 3) return { season: 'WINTER', year };
+  if (m <= 6) return { season: 'SPRING', year };
+  if (m <= 9) return { season: 'SUMMER', year };
+  return { season: 'FALL', year };
+}
+
+app.get('/api/tmdb/logo', async (req, res) => {
+  const title = String(req.query.title || '').trim();
+  const id = req.query.id ? Number(req.query.id) : undefined;
+  const type = req.query.type === 'movie' ? 'movie' : 'tv';
+
+  if (id && Number.isFinite(id) && id > 0) {
+    const logoUrl = await getTmdbLogoById(id, type);
+    if (logoUrl || !title) return res.json({ logo: logoUrl });
+  }
+
+  if (!title) return res.status(400).json({ error: 'Missing title or id' });
+  const cacheKey = `tmdb:logo:title:${type}:${title.toLowerCase()}`;
+  const cachedLogo = getCached<{ logo: string | null }>(cacheKey);
+  if (cachedLogo) return res.json(cachedLogo);
+
+  try {
+    const resolved = await resolveTmdbShowByTitle([title], undefined, type);
+    const logoUrl = resolved ? await getTmdbLogoById(resolved.id, resolved.type) : null;
+    const payload = { logo: logoUrl };
+    setCached(cacheKey, payload, logoUrl ? 24 * 60 * 60 * 1000 : 6 * 60 * 60 * 1000);
+    return res.json(payload);
+  } catch (err) {
+    return res.status(502).json({ error: err instanceof Error ? err.message : 'TMDB logo lookup failed', logo: null });
+  }
+});
 
 async function getJjkAnilistSeasons() {
   const cacheKey = 'jjk:anilist:seasons:v1';
@@ -311,11 +493,9 @@ async function getJjkAnilistSeasons() {
     const q = `query {
       s1: Media(id: 113415, type: ANIME) {
         id idMal title { english romaji } episodes bannerImage coverImage { extraLarge }
-        relations { edges { relationType node { id idMal format episodes status title { english romaji } bannerImage coverImage { extraLarge } } } }
       }
       s2: Media(id: 145064, type: ANIME) {
         id idMal title { english romaji } episodes bannerImage coverImage { extraLarge }
-        relations { edges { relationType node { id idMal format episodes status title { english romaji } bannerImage coverImage { extraLarge } } } }
       }
       s3: Media(id: 172463, type: ANIME) {
         id idMal title { english romaji } episodes bannerImage coverImage { extraLarge }
@@ -362,9 +542,7 @@ async function getJjkAnilistSeasons() {
       setCached(cacheKey, seasons, 6 * 60 * 60 * 1000);
       return seasons;
     }
-  } catch {
-    // Use static fallback below
-  }
+  } catch {}
   setCached(cacheKey, JJK_FALLBACK_SEASONS, 60 * 60 * 1000);
   return JJK_FALLBACK_SEASONS;
 }
@@ -372,7 +550,7 @@ async function getJjkAnilistSeasons() {
 async function getJjkSeasonEpisodes(seasonNum: number, fallbackBackdrop: string | null) {
   const seasons = await getJjkAnilistSeasons();
   const target = seasons.find((s) => s.number === seasonNum) || seasons[0];
-  const cacheKey = `jjk:anilist:episodes:s${target.number}:v1`;
+  const cacheKey = `jjk:anilist:episodes:s${target.number}:v2`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
@@ -384,23 +562,23 @@ async function getJjkSeasonEpisodes(seasonNum: number, fallbackBackdrop: string 
       `query ($id: Int) { Media(id: $id, type: ANIME) { episodes bannerImage coverImage { extraLarge } streamingEpisodes { title thumbnail } } }`,
       { id: target.anilistId }
     ),
-    fetch(`https://api.jikan.moe/v4/anime/${target.malId}/episodes?page=1`, { signal: AbortSignal.timeout(4000) })
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null),
+    jikanFetch<any>(`/anime/${target.malId}/episodes?page=1`),
   ]);
 
   const azEps = aniZipData?.episodes || {};
   const alMedia = alData?.Media;
   const alStreams = Array.isArray(alMedia?.streamingEpisodes) ? alMedia.streamingEpisodes : [];
   const jikanEps = Array.isArray(jikanData?.data) ? jikanData.data : [];
-  const count = Math.max(
-    target.episodes || 0,
-    Object.keys(azEps).filter((k) => /^\d+$/.test(k)).length,
-    alMedia?.episodes || 0,
-    jikanEps.length
-  ) || 12;
+  const count =
+    Math.max(
+      target.episodes || 0,
+      Object.keys(azEps).filter((k) => /^\d+$/.test(k)).length,
+      alMedia?.episodes || 0,
+      jikanEps.length
+    ) || 12;
 
-  const seasonBanner = alMedia?.bannerImage || target.banner || fallbackBackdrop || alMedia?.coverImage?.extraLarge || target.poster;
+  const seasonBanner =
+    alMedia?.bannerImage || target.banner || fallbackBackdrop || alMedia?.coverImage?.extraLarge || target.poster;
 
   const episodes = [];
   for (let i = 1; i <= count; i++) {
@@ -409,13 +587,7 @@ async function getJjkSeasonEpisodes(seasonNum: number, fallbackBackdrop: string 
     const alStream = alStreams[i - 1];
     const rawAlTitle = alStream?.title ? String(alStream.title).replace(/^Episode\s*\d+\s*[-–:]\s*/i, '').trim() : '';
 
-    const epTitle =
-      az?.title?.en ||
-      az?.title?.['x-jat'] ||
-      jk?.title ||
-      rawAlTitle ||
-      `Episode ${i}`;
-
+    const epTitle = az?.title?.en || az?.title?.['x-jat'] || jk?.title || rawAlTitle || `Episode ${i}`;
     const epThumb = az?.image || alStream?.thumbnail || seasonBanner || null;
     const epOverview = az?.overview || az?.summary || '';
 
@@ -443,6 +615,14 @@ async function getJjkSeasonEpisodes(seasonNum: number, fallbackBackdrop: string 
       anilist: target.anilistId,
       mal: target.malId,
     },
+    seasons: seasons.map((s) => ({
+      number: s.number,
+      name: s.name,
+      episodes: s.episodes,
+      poster: s.poster,
+      anilistId: s.anilistId,
+      malId: s.malId,
+    })),
   };
   setCached(cacheKey, payload, 12 * 60 * 60 * 1000);
   return payload;
@@ -452,23 +632,7 @@ app.get('/api/tmdb/seasons', async (req, res) => {
   const title = String(req.query.title || '').trim();
   const id = req.query.id ? Number(req.query.id) : undefined;
 
-  let showId = id;
-  if (!showId && title) {
-    const searchKey = `tmdb:search:tv:${title.toLowerCase()}`;
-    let match = getCached<any>(searchKey);
-    if (!match) {
-      try {
-        const searchRes = await tmdbFetch('/search/tv', { query: title });
-        match = (searchRes.results || [])[0];
-        if (match) setCached(searchKey, match, 24 * 60 * 60 * 1000);
-      } catch {}
-    }
-    showId = match?.id;
-  }
-
-  if (!showId) return res.json({ id: null, seasons: [] });
-
-  if (showId === JJK_TMDB_ID || /jujutsu\s*kaisen/i.test(title)) {
+  if (isJujutsuKaisen(id, title)) {
     const jjkSeasons = await getJjkAnilistSeasons();
     return res.json({
       id: JJK_TMDB_ID,
@@ -482,6 +646,14 @@ app.get('/api/tmdb/seasons', async (req, res) => {
       })),
     });
   }
+
+  let showId = id;
+  if (!showId && title) {
+    const resolved = await resolveTmdbShowByTitle([title], undefined, 'tv');
+    showId = resolved?.id;
+  }
+
+  if (!showId) return res.json({ id: null, seasons: [] });
 
   const cacheKey = `tmdb:seasons:id:${showId}`;
   const cached = getCached<any>(cacheKey);
@@ -508,102 +680,227 @@ app.get('/api/tmdb/seasons', async (req, res) => {
   }
 });
 
-// Season Episodes with guaranteed thumbnails (AniList + MAL/AniZip override for Jujutsu Kaisen)
-app.get('/api/tmdb/tv/:id/season/:season', async (req, res) => {
-  const id = Number(req.params.id);
-  const seasonNum = Math.max(1, Number(req.params.season) || 1);
-  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid TV ID' });
+async function resolveSeasonEpisodesHybrid(id: number, seasonNum: number, hintTitle?: string) {
+  if (isJujutsuKaisen(id, hintTitle)) {
+    return await getJjkSeasonEpisodes(seasonNum, JJK_FALLBACK_SEASONS[0].banner);
+  }
 
-  if (id === JJK_TMDB_ID) {
-    try {
-      const payload = await getJjkSeasonEpisodes(seasonNum, JJK_FALLBACK_SEASONS[0].banner);
-      return res.json(payload);
-    } catch (err) {
-      return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to load JJK season episodes' });
+  const cacheKey = `hybrid:episodes:${id}:s${seasonNum}:${(hintTitle || '').toLowerCase()}:v3`;
+  const cached = getCached<any>(cacheKey);
+  if (cached) return cached;
+
+  let searchTitle = hintTitle || '';
+  let altTitle = '';
+  let country: string | null = null;
+  let fallbackEps = 12;
+  let fallbackThumb: string | null = null;
+  let malId: number | undefined;
+
+  const alData = await anilistGraphql(
+    `query ($id: Int) { Media(id: $id, type: ANIME) { id idMal title { english romaji } countryOfOrigin episodes bannerImage coverImage { extraLarge } } }`,
+    { id }
+  );
+  if (alData?.Media) {
+    searchTitle = searchTitle || alData.Media.title?.english || alData.Media.title?.romaji || '';
+    altTitle = alData.Media.title?.romaji || '';
+    country = alData.Media.countryOfOrigin || null;
+    fallbackEps = Number(alData.Media.episodes) || 12;
+    fallbackThumb = alData.Media.bannerImage || alData.Media.coverImage?.extraLarge || null;
+    malId = alData.Media.idMal || undefined;
+    if (isJujutsuKaisen(alData.Media.id, searchTitle)) {
+      return await getJjkSeasonEpisodes(seasonNum, fallbackThumb || JJK_FALLBACK_SEASONS[0].banner);
     }
   }
 
-  const cacheKey = `tmdb:tv:${id}:season:${seasonNum}`;
-  const cached = getCached(cacheKey);
-  if (cached) return res.json(cached);
+  const resolved = searchTitle
+    ? await resolveTmdbShowByTitle([searchTitle, altTitle], country, 'tv')
+    : { id, type: 'tv' as const, backdrop: null };
 
-  try {
-    const [seasonData, showData] = await Promise.all([
-      tmdbFetch(`/tv/${id}/season/${seasonNum}`).catch(() => null),
-      tmdbFetch(`/tv/${id}`).catch(() => null),
-    ]);
+  const tmdbId = resolved?.id || id;
 
-    const fallbackBackdrop = showData?.backdrop_path
-      ? `https://image.tmdb.org/t/p/w1280${showData.backdrop_path}`
-      : showData?.poster_path
-        ? `https://image.tmdb.org/t/p/w500${showData.poster_path}`
-        : null;
+  const [seasonData, showData] = await Promise.all([
+    tmdbFetch(`/tv/${tmdbId}/season/${seasonNum}`).catch(() => null),
+    tmdbFetch(`/tv/${tmdbId}`).catch(() => null),
+  ]);
 
-    const rawEpisodes = seasonData?.episodes || [];
-    const episodes = rawEpisodes.map((ep: any) => ({
-      number: Number(ep.episode_number),
-      title: ep.name ? String(ep.name).trim() : `Episode ${ep.episode_number}`,
-      overview: ep.overview || '',
-      thumbnail: ep.still_path
-        ? `https://image.tmdb.org/t/p/w500${ep.still_path}`
-        : fallbackBackdrop,
-      airDate: ep.air_date || null,
-      score: ep.vote_average || null,
+  const fallbackBackdrop = showData?.backdrop_path
+    ? `https://image.tmdb.org/t/p/w1280${showData.backdrop_path}`
+    : showData?.poster_path
+      ? `https://image.tmdb.org/t/p/w500${showData.poster_path}`
+      : fallbackThumb;
+
+  const rawEpisodes = Array.isArray(seasonData?.episodes) ? seasonData.episodes : [];
+  const episodes =
+    rawEpisodes.length > 0
+      ? rawEpisodes.map((ep: any) => ({
+          number: Number(ep.episode_number),
+          title: ep.name ? String(ep.name).trim() : `Episode ${ep.episode_number}`,
+          overview: ep.overview || '',
+          thumbnail: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : fallbackBackdrop,
+          airDate: ep.air_date || null,
+          score: ep.vote_average || null,
+        }))
+      : Array.from({ length: Math.min(Math.max(1, fallbackEps), 100) }, (_, idx) => ({
+          number: idx + 1,
+          title: `Episode ${idx + 1}`,
+          overview: '',
+          thumbnail: fallbackBackdrop,
+          airDate: null,
+          score: null,
+        }));
+
+  const tmdbSeasons = (showData?.seasons || [])
+    .filter((s: any) => Number(s.season_number) > 0)
+    .map((s: any) => ({
+      number: Number(s.season_number),
+      name: s.name || `Season ${s.season_number}`,
+      episodes: s.episode_count || 0,
+      poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : null,
     }));
 
-    const payload = {
-      id,
-      season: seasonNum,
-      seasonName: seasonData?.name || `Season ${seasonNum}`,
-      episodes,
-      total: episodes.length,
-    };
-    setCached(cacheKey, payload, 12 * 60 * 60 * 1000);
+  const payload = {
+    id: tmdbId,
+    anilistId: alData?.Media ? id : undefined,
+    malId,
+    season: seasonNum,
+    seasonName: seasonData?.name || `Season ${seasonNum}`,
+    episodes,
+    total: episodes.length,
+    ids: {
+      themoviedb: tmdbId,
+      anilist: alData?.Media ? id : undefined,
+      mal: malId,
+    },
+    seasons: tmdbSeasons,
+  };
+  setCached(cacheKey, payload, 12 * 60 * 60 * 1000);
+  return payload;
+}
+
+// Season Episodes (TMDB for all Anime & Donghua; AniList + MAL/AniZip for Jujutsu Kaisen)
+app.get('/api/tmdb/tv/:id/season/:season', async (req, res) => {
+  const id = Number(req.params.id);
+  const seasonNum = Math.max(1, Number(req.params.season) || 1);
+  const hintTitle = req.query.title ? String(req.query.title).trim() : undefined;
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid TV ID' });
+
+  try {
+    const payload = await resolveSeasonEpisodesHybrid(id, seasonNum, hintTitle);
     return res.json(payload);
   } catch (err) {
     return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to fetch season episodes' });
   }
 });
 
-// Anime Details
+// Anime Details: AniList + Jikan for metadata/images/posters/banners, TMDB for logo & seasons (except JJK -> AniList+MAL seasons)
 app.get('/api/tmdb/anime/detail/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid show ID' });
+  const rawId = Number(req.params.id);
+  if (!Number.isFinite(rawId) || rawId <= 0) return res.status(400).json({ error: 'Invalid show ID' });
 
-  const cacheKey = `tmdb:anime:detail:${id}:v2`;
+  const queryId = rawId === JJK_TMDB_ID ? 113415 : rawId;
+  const cacheKey = `hybrid:anime:detail:${queryId}:v3`;
   const cached = getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    const detail = await tmdbFetch(`/tv/${id}`, {
-      append_to_response: 'images,credits,recommendations,similar,videos',
-      include_image_language: 'en,ja,zh,null',
-    });
+    const detailQuery = `query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        ${ANILIST_CARD_FIELDS}
+        studios(isMain: true) { nodes { id name isAnimationStudio } }
+        characters(sort: [ROLE, RELEVANCE], perPage: 15) {
+          edges {
+            role
+            node { id name { full } image { large } }
+          }
+        }
+        recommendations(sort: [RATING_DESC], perPage: 14) {
+          nodes {
+            mediaRecommendation { ${ANILIST_CARD_FIELDS} }
+          }
+        }
+      }
+    }`;
 
-    const logos = detail.images?.logos || [];
-    const enLogo = logos.find((l: any) => l.iso_639_1 === 'en');
-    const bestLogo = enLogo || logos.sort((a: any, b: any) => (b.vote_average || 0) - (a.vote_average || 0))[0];
-    const logoUrl = bestLogo?.file_path ? `https://image.tmdb.org/t/p/w500${bestLogo.file_path}` : null;
+    const alData = await anilistGraphql<any>(detailQuery, { id: queryId });
+    let media: any = alData?.Media || null;
 
-    const formattedMedia = formatTmdbShow(detail, logoUrl);
+    if (!media) {
+      const jk = await jikanFetch<{ data: any }>(`/anime/${queryId}/full`);
+      if (jk?.data) media = formatJikanAnime(jk.data);
+    }
 
-    // Override broken TMDB merged season structure for Jujutsu Kaisen with AniList + MAL seasons
-    let seasons: { number: number; name: string; episodes: number; poster?: string | null; anilistId?: number; malId?: number }[];
-    let overrideEpisodeTotal: number | null = null;
+    // Fallback for legacy TMDB IDs in user history/bookmarks
+    if (!media) {
+      try {
+        const tmdbDetail = await tmdbFetch(`/tv/${rawId}`, {
+          append_to_response: 'images,credits,recommendations,videos',
+          include_image_language: 'en,ja,zh,null',
+        });
+        const logos = tmdbDetail.images?.logos || [];
+        const enLogo = logos.find((l: any) => l.iso_639_1 === 'en');
+        const bestLogo = enLogo || logos.sort((a: any, b: any) => (b.vote_average || 0) - (a.vote_average || 0))[0];
+        const logoUrl = bestLogo?.file_path ? `https://image.tmdb.org/t/p/w500${bestLogo.file_path}` : null;
+        const formatted = formatTmdbShow(tmdbDetail, logoUrl);
+        const seasons = (tmdbDetail.seasons || [])
+          .filter((s: any) => Number(s.season_number) > 0)
+          .map((s: any) => ({
+            number: Number(s.season_number),
+            name: s.name || `Season ${s.season_number}`,
+            episodes: s.episode_count || 0,
+            poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : null,
+          }));
+        const legacyPayload = {
+          ...formatted,
+          tmdbId: rawId,
+          logo: logoUrl,
+          seasons: seasons.length > 0 ? seasons : [{ number: 1, name: 'Season 1', episodes: tmdbDetail.number_of_episodes || 12, poster: null }],
+        };
+        setCached(cacheKey, legacyPayload, 6 * 60 * 60 * 1000);
+        return res.json(legacyPayload);
+      } catch {
+        return res.status(404).json({ error: 'Anime not found' });
+      }
+    }
 
-    if (id === JJK_TMDB_ID) {
-      const jjkSeasons = await getJjkAnilistSeasons();
-      seasons = jjkSeasons.map((s) => ({
-        number: s.number,
-        name: s.name,
-        episodes: s.episodes,
-        poster: s.poster,
-        anilistId: s.anilistId,
-        malId: s.malId,
-      }));
-      overrideEpisodeTotal = jjkSeasons.reduce((acc, s) => acc + s.episodes, 0);
-    } else {
-      seasons = (detail.seasons || [])
+    const primaryTitle = media.title?.english || media.title?.romaji || '';
+    const altTitle = media.title?.romaji || '';
+    const jjk = isJujutsuKaisen(media.id, primaryTitle);
+
+    if (jjk) {
+      const [jjkSeasons, logoUrl] = await Promise.all([
+        getJjkAnilistSeasons(),
+        getTmdbLogoById(JJK_TMDB_ID, 'tv'),
+      ]);
+      const payload = {
+        ...media,
+        tmdbId: JJK_TMDB_ID,
+        logo: logoUrl,
+        episodes: jjkSeasons.reduce((acc, s) => acc + s.episodes, 0),
+        seasons: jjkSeasons.map((s) => ({
+          number: s.number,
+          name: s.name,
+          episodes: s.episodes,
+          poster: s.poster,
+          anilistId: s.anilistId,
+          malId: s.malId,
+        })),
+      };
+      setCached(cacheKey, payload, 6 * 60 * 60 * 1000);
+      return res.json(payload);
+    }
+
+    const prefType: 'tv' | 'movie' = media.format === 'MOVIE' ? 'movie' : 'tv';
+    const resolved = await resolveTmdbShowByTitle([primaryTitle, altTitle], media.countryOfOrigin, prefType);
+    let logoUrl: string | null = null;
+    let seasons: { number: number; name: string; episodes: number; poster?: string | null }[] = [];
+
+    if (resolved) {
+      const [logo, tmdbShow] = await Promise.all([
+        getTmdbLogoById(resolved.id, resolved.type),
+        resolved.type === 'tv' ? tmdbFetch(`/tv/${resolved.id}`).catch(() => null) : Promise.resolve(null),
+      ]);
+      logoUrl = logo;
+      seasons = (tmdbShow?.seasons || [])
         .filter((s: any) => Number(s.season_number) > 0)
         .map((s: any) => ({
           number: Number(s.season_number),
@@ -613,38 +910,15 @@ app.get('/api/tmdb/anime/detail/:id', async (req, res) => {
         }));
     }
 
-    // Extract cast
-    const characters = {
-      edges: (detail.credits?.cast || []).slice(0, 15).map((c: any) => ({
-        role: c.character || 'Main Character',
-        node: {
-          id: c.id,
-          name: { full: c.name },
-          image: { large: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : '' },
-        },
-      })),
-    };
-
-    // Extract recommendations
-    const recommendations = {
-      nodes: (detail.recommendations?.results || []).slice(0, 14).map((r: any) => ({
-        mediaRecommendation: formatTmdbShow(r),
-      })),
-    };
-
-    // YouTube trailer
-    const videos = detail.videos?.results || [];
-    const trailerVideo = videos.find((v: any) => v.site === 'YouTube' && (v.type === 'Trailer' || v.type === 'Teaser')) || videos[0];
-    const trailer = trailerVideo?.key ? { id: trailerVideo.key, site: 'youtube' } : null;
-
     const payload = {
-      ...formattedMedia,
-      episodes: overrideEpisodeTotal ?? formattedMedia.episodes,
+      ...media,
+      tmdbId: resolved?.id || null,
       logo: logoUrl,
-      seasons: seasons.length > 0 ? seasons : [{ number: 1, name: 'Season 1', episodes: detail.number_of_episodes || 12, poster: null }],
-      characters,
-      recommendations,
-      trailer,
+      bannerImage: media.bannerImage || resolved?.backdrop || media.coverImage?.extraLarge || null,
+      seasons:
+        seasons.length > 0
+          ? seasons
+          : [{ number: 1, name: 'Season 1', episodes: media.episodes || 12, poster: media.coverImage?.extraLarge || null }],
     };
 
     setCached(cacheKey, payload, 6 * 60 * 60 * 1000);
@@ -654,112 +928,99 @@ app.get('/api/tmdb/anime/detail/:id', async (req, res) => {
   }
 });
 
-// Anime Home Feed (Trending, Season, Popular, Top Rated, Upcoming)
+// Anime Home Feed (AniList + Jikan posters/banners/metadata + TMDB logos on spotlight)
 app.get('/api/tmdb/anime/home', async (req, res) => {
-  const cacheKey = 'tmdb:anime:home:v2';
+  const cacheKey = 'hybrid:anime:home:v3';
   const cached = getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    const [trendingRes, seasonRes, popularRes, topRes, upcomingRes] = await Promise.all([
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'ja',
-        sort_by: 'popularity.desc',
-        page: '1',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'ja',
-        sort_by: 'vote_count.desc',
-        page: '1',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'ja',
-        sort_by: 'popularity.desc',
-        page: '2',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'ja',
-        sort_by: 'vote_average.desc',
-        'vote_count.gte': '120',
-        page: '1',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'ja',
-        'first_air_date.gte': '2024-01-01',
-        sort_by: 'popularity.desc',
-        page: '1',
-      }),
+    const { season, year } = getCurrentAnimeSeason();
+    const query = `query ($season: MediaSeason, $year: Int) {
+      trending: Page(page: 1, perPage: 18) {
+        media(type: ANIME, sort: TRENDING_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      season: Page(page: 1, perPage: 18) {
+        media(type: ANIME, season: $season, seasonYear: $year, sort: POPULARITY_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      popular: Page(page: 1, perPage: 18) {
+        media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      top: Page(page: 1, perPage: 18) {
+        media(type: ANIME, sort: SCORE_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      upcoming: Page(page: 1, perPage: 18) {
+        media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+    }`;
+
+    const alData = await anilistGraphql<any>(query, { season, year });
+    if (alData?.trending?.media) {
+      const trending = await attachSpotlightLogos(alData.trending.media || []);
+      const payload = {
+        trending,
+        season: alData.season?.media || [],
+        popular: alData.popular?.media || [],
+        top: alData.top?.media || [],
+        upcoming: alData.upcoming?.media || [],
+      };
+      setCached(cacheKey, payload, 30 * 60 * 1000);
+      return res.json(payload);
+    }
+
+    // Jikan fallback
+    const [topNow, popList, topScore, upcomingList] = await Promise.all([
+      jikanFetch<{ data: any[] }>('/top/anime?filter=airing&limit=18'),
+      jikanFetch<{ data: any[] }>('/top/anime?filter=bypopularity&limit=18'),
+      jikanFetch<{ data: any[] }>('/top/anime?limit=18'),
+      jikanFetch<{ data: any[] }>('/top/anime?filter=upcoming&limit=18'),
     ]);
 
-    // Attach logos for top trending spotlight items
-    const trendingList = (trendingRes.results || []).slice(0, 18);
-    const topSpotlight = trendingList.slice(0, 8);
-    const logos = await Promise.all(topSpotlight.map((x: any) => getTmdbLogoById(x.id, 'tv')));
-
-    const trending = trendingList.map((x: any, i: number) => formatTmdbShow(x, i < 8 ? logos[i] : null));
-    const season = (seasonRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-    const popular = (popularRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-    const top = (topRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-    const upcoming = (upcomingRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-
-    const payload = { trending, season, popular, top, upcoming };
-    setCached(cacheKey, payload, 30 * 60 * 1000);
+    const trending = await attachSpotlightLogos((topNow?.data || []).map((x) => formatJikanAnime(x)));
+    const payload = {
+      trending,
+      season: trending,
+      popular: (popList?.data || []).map((x) => formatJikanAnime(x)),
+      top: (topScore?.data || []).map((x) => formatJikanAnime(x)),
+      upcoming: (upcomingList?.data || []).map((x) => formatJikanAnime(x)),
+    };
+    setCached(cacheKey, payload, 20 * 60 * 1000);
     return res.json(payload);
   } catch (err) {
     return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to fetch anime home' });
   }
 });
 
-// Donghua Home Feed (Chinese Animation)
+// Donghua Home Feed (AniList CN Animation + TMDB logos on spotlight)
 app.get('/api/tmdb/donghua/home', async (req, res) => {
-  const cacheKey = 'tmdb:donghua:home:v2';
+  const cacheKey = 'hybrid:donghua:home:v3';
   const cached = getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    const [trendingRes, airingRes, popularRes, topRes] = await Promise.all([
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'zh',
-        sort_by: 'popularity.desc',
-        page: '1',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'zh',
-        sort_by: 'popularity.desc',
-        page: '2',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'zh',
-        sort_by: 'popularity.desc',
-        page: '3',
-      }),
-      tmdbFetch('/discover/tv', {
-        with_genres: '16',
-        with_original_language: 'zh',
-        sort_by: 'vote_average.desc',
-        'vote_count.gte': '10',
-        page: '1',
-      }),
-    ]);
+    const query = `query {
+      trending: Page(page: 1, perPage: 18) {
+        media(type: ANIME, countryOfOrigin: CN, sort: TRENDING_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      airing: Page(page: 1, perPage: 18) {
+        media(type: ANIME, countryOfOrigin: CN, status: RELEASING, sort: POPULARITY_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      popular: Page(page: 1, perPage: 18) {
+        media(type: ANIME, countryOfOrigin: CN, sort: POPULARITY_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+      top: Page(page: 1, perPage: 18) {
+        media(type: ANIME, countryOfOrigin: CN, sort: SCORE_DESC, isAdult: false) { ${ANILIST_CARD_FIELDS} }
+      }
+    }`;
 
-    const trendingList = (trendingRes.results || []).slice(0, 18);
-    const topSpotlight = trendingList.slice(0, 8);
-    const logos = await Promise.all(topSpotlight.map((x: any) => getTmdbLogoById(x.id, 'tv')));
-
-    const trending = trendingList.map((x: any, i: number) => formatTmdbShow(x, i < 8 ? logos[i] : null));
-    const airing = (airingRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-    const popular = (popularRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-    const top = (topRes.results || []).slice(0, 18).map((x: any) => formatTmdbShow(x));
-
-    const payload = { trending, airing, popular, top };
+    const alData = await anilistGraphql<any>(query);
+    const trending = await attachSpotlightLogos(alData?.trending?.media || []);
+    const payload = {
+      trending,
+      airing: alData?.airing?.media || [],
+      popular: alData?.popular?.media || [],
+      top: alData?.top?.media || [],
+    };
     setCached(cacheKey, payload, 30 * 60 * 1000);
     return res.json(payload);
   } catch (err) {
@@ -767,166 +1028,141 @@ app.get('/api/tmdb/donghua/home', async (req, res) => {
   }
 });
 
-const TMDB_GENRE_MAP: Record<string, string> = {
-  Action: '10759',
-  Adventure: '10759',
-  Comedy: '35',
-  Drama: '18',
-  Fantasy: '10765',
-  Mystery: '9648',
-  'Sci-Fi': '10765',
-  Thriller: '9648',
-  Psychological: '18',
-  Romance: '18',
-};
-
-// Anime & Donghua Browse / Search
+// Anime & Donghua Browse / Search (AniList + Jikan fallback)
 app.get('/api/tmdb/anime/browse', async (req, res) => {
-  const query = String(req.query.q || '').trim();
+  const q = String(req.query.q || '').trim();
   const page = Math.max(1, Number(req.query.page) || 1);
-  const country = String(req.query.country || 'JP').toUpperCase();
-  const isChinese = country === 'CN';
-  const lang = isChinese ? 'zh' : 'ja';
-  const genre = String(req.query.genre || '').trim();
-  const sort = String(req.query.sort || 'TRENDING_DESC');
+  const perPage = Math.min(50, Math.max(1, Number(req.query.perPage) || 24));
+  const country = req.query.country ? String(req.query.country).toUpperCase() : undefined;
+  const genre = String(req.query.genre || '').trim() || undefined;
+  const format = String(req.query.format || '').trim() || undefined;
+  const status = String(req.query.status || '').trim() || undefined;
+  const season = String(req.query.season || '').trim() || undefined;
+  const year = req.query.year ? Number(req.query.year) : undefined;
+  const sortParam = String(req.query.sort || 'TRENDING_DESC');
 
-  const cacheKey = `tmdb:browse:${query}:${page}:${country}:${genre}:${sort}`;
+  const cacheKey = `hybrid:browse:${q}:${page}:${perPage}:${country || ''}:${genre || ''}:${format || ''}:${status || ''}:${season || ''}:${year || ''}:${sortParam}`;
   const cached = getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    let tmdbData: any;
-    if (query) {
-      tmdbData = await tmdbFetch('/search/tv', {
-        query,
-        page,
-        include_adult: 'false',
-      });
-    } else {
-      const mappedGenre = genre && TMDB_GENRE_MAP[genre] ? `16,${TMDB_GENRE_MAP[genre]}` : '16';
-      let sortBy = 'popularity.desc';
-      if (sort === 'SCORE_DESC') sortBy = 'vote_average.desc';
-      else if (sort === 'START_DATE_DESC') sortBy = 'first_air_date.desc';
+    const sortMap: Record<string, string> = {
+      TRENDING_DESC: 'TRENDING_DESC',
+      POPULARITY_DESC: 'POPULARITY_DESC',
+      SCORE_DESC: 'SCORE_DESC',
+      START_DATE_DESC: 'START_DATE_DESC',
+      FAVOURITES_DESC: 'FAVOURITES_DESC',
+    };
+    const sort = q ? 'SEARCH_MATCH' : sortMap[sortParam] || 'TRENDING_DESC';
 
-      const params: Record<string, string | number> = {
-        with_genres: mappedGenre,
-        with_original_language: lang,
-        page,
-        sort_by: sortBy,
-      };
-      if (sort === 'SCORE_DESC') {
-        params['vote_count.gte'] = isChinese ? 10 : 80;
+    const alQuery = `query (
+      $page: Int, $perPage: Int, $search: String, $genre: String,
+      $format: MediaFormat, $status: MediaStatus, $season: MediaSeason,
+      $year: Int, $sort: [MediaSort], $country: CountryCode
+    ) {
+      Page(page: $page, perPage: $perPage) {
+        pageInfo { hasNextPage }
+        media(
+          type: ANIME, search: $search, genre: $genre, format: $format,
+          status: $status, season: $season, seasonYear: $year,
+          sort: $sort, countryOfOrigin: $country, isAdult: false
+        ) {
+          ${ANILIST_CARD_FIELDS}
+        }
       }
-      tmdbData = await tmdbFetch('/discover/tv', params);
+    }`;
+
+    const alData = await anilistGraphql<any>(alQuery, {
+      page,
+      perPage,
+      search: q || undefined,
+      genre,
+      format,
+      status,
+      season,
+      year,
+      sort: [sort],
+      country: country || undefined,
+    });
+
+    if (alData?.Page) {
+      const payload = {
+        items: alData.Page.media || [],
+        page,
+        hasNextPage: Boolean(alData.Page.pageInfo?.hasNextPage),
+      };
+      setCached(cacheKey, payload, 10 * 60 * 1000);
+      return res.json(payload);
     }
 
-    const items = (tmdbData.results || []).map((x: any) => formatTmdbShow(x));
-    const payload = {
-      items,
-      page: Number(tmdbData.page || 1),
-      totalPages: Number(tmdbData.total_pages || 1),
-      hasNextPage: Number(tmdbData.page || 1) < Number(tmdbData.total_pages || 1),
-    };
-    setCached(cacheKey, payload, 10 * 60 * 1000);
-    return res.json(payload);
+    if (q) {
+      const jk = await jikanFetch<{ data: any[]; pagination?: { has_next_page?: boolean } }>(
+        `/anime?q=${encodeURIComponent(q)}&page=${page}&limit=${perPage}`
+      );
+      const payload = {
+        items: (jk?.data || []).map((x) => formatJikanAnime(x, country || 'JP')),
+        page,
+        hasNextPage: Boolean(jk?.pagination?.has_next_page),
+      };
+      setCached(cacheKey, payload, 10 * 60 * 1000);
+      return res.json(payload);
+    }
+
+    return res.json({ items: [], page, hasNextPage: false });
   } catch (err) {
     return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to browse anime', items: [], hasNextPage: false });
   }
 });
 
-// Airing Schedule (TMDB animation airing shows)
+// Airing Schedule (AniList AiringSchedules)
 app.get('/api/tmdb/schedule', async (req, res) => {
-  const cacheKey = 'tmdb:schedule:v2';
+  const cacheKey = 'hybrid:schedule:v3';
   const cached = getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    const data = await tmdbFetch('/discover/tv', {
-      with_genres: '16',
-      with_original_language: 'ja',
-      sort_by: 'popularity.desc',
-      'air_date.gte': new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10),
-      page: '1',
-    });
     const nowSec = Math.floor(Date.now() / 1000);
-    const items = (data.results || []).slice(0, 24).map((x: any, idx: number) => {
-      const media = formatTmdbShow(x);
-      return {
-        id: media.id,
-        episode: 1,
-        airingAt: nowSec + (idx % 7) * 86400,
-        media,
-      };
+    const alQuery = `query ($start: Int, $end: Int) {
+      Page(page: 1, perPage: 28) {
+        airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME) {
+          id
+          episode
+          airingAt
+          media {
+            ${ANILIST_CARD_FIELDS}
+            isAdult
+          }
+        }
+      }
+    }`;
+    const alData = await anilistGraphql<any>(alQuery, {
+      start: nowSec - 24 * 3600,
+      end: nowSec + 7 * 24 * 3600,
     });
-    const payload = { schedules: items };
-    setCached(cacheKey, payload, 60 * 60 * 1000);
+    const list = (alData?.Page?.airingSchedules || []).filter((s: any) => s.media && !s.media.isAdult);
+    const schedules = list.map((s: any) => ({
+      id: s.id,
+      episode: s.episode,
+      airingAt: s.airingAt,
+      media: s.media,
+    }));
+    const payload = { schedules };
+    setCached(cacheKey, payload, 30 * 60 * 1000);
     return res.json(payload);
   } catch (err) {
     return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to load schedule', schedules: [] });
   }
 });
 
-// Legacy / Direct episode list mapping with guaranteed thumbnail
+// Legacy / Direct episode list mapping (routes through hybrid TMDB / JJK AniList+MAL)
 app.get('/api/anime/:id/episodes', async (req, res) => {
   const id = Number(req.params.id);
   const season = Math.max(1, Number(req.query.season) || 1);
+  const hintTitle = req.query.title ? String(req.query.title).trim() : undefined;
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid anime ID' });
 
-  if (id === JJK_TMDB_ID) {
-    try {
-      const payload = await getJjkSeasonEpisodes(season, JJK_FALLBACK_SEASONS[0].banner);
-      return res.json(payload);
-    } catch (err) {
-      return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to load JJK episodes' });
-    }
-  }
-
-  const cacheKey = `episodes:tmdb:${id}:s${season}`;
-  const cached = getCached(cacheKey);
-  if (cached) return res.json(cached);
-
   try {
-    const [seasonData, showData] = await Promise.all([
-      tmdbFetch(`/tv/${id}/season/${season}`).catch(() => null),
-      tmdbFetch(`/tv/${id}`).catch(() => null),
-    ]);
-
-    const fallbackThumb = showData?.backdrop_path
-      ? `https://image.tmdb.org/t/p/w1280${showData.backdrop_path}`
-      : showData?.poster_path
-        ? `https://image.tmdb.org/t/p/w500${showData.poster_path}`
-        : null;
-
-    const rawEpisodes = seasonData?.episodes || [];
-    const count = Math.max(rawEpisodes.length, showData?.number_of_episodes || 1);
-    const episodes = [];
-
-    if (rawEpisodes.length > 0) {
-      for (const ep of rawEpisodes) {
-        episodes.push({
-          number: Number(ep.episode_number),
-          title: ep.name ? String(ep.name).trim() : `Episode ${ep.episode_number}`,
-          thumbnail: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : fallbackThumb,
-          overview: ep.overview || '',
-        });
-      }
-    } else {
-      for (let i = 1; i <= Math.min(count, 100); i++) {
-        episodes.push({
-          number: i,
-          title: `Episode ${i}`,
-          thumbnail: fallbackThumb,
-          overview: '',
-        });
-      }
-    }
-
-    const payload = {
-      episodes,
-      total: episodes.length,
-      ids: { themoviedb: id },
-    };
-    setCached(cacheKey, payload, 15 * 60 * 1000);
+    const payload = await resolveSeasonEpisodesHybrid(id, season, hintTitle);
     return res.json(payload);
   } catch (err) {
     return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to load episodes' });

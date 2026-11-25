@@ -1,218 +1,159 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { X } from 'lucide-react';
-import type { AiringItem, AnimeMedia } from '../types';
-import {
-  ANIME_GENRES,
-  fetchAnimeHome,
-  fetchLatestAiringEpisodes,
-  formatRelativeTime,
-  formatSeasonLabel,
-  getCurrentSeason,
-  pickTitle,
-} from '../lib/api';
-import { removeHistoryItem, useHistory } from '../lib/storage';
-import { HeroCarousel } from '../components/HeroCarousel';
-import { HubBar } from '../components/HubBar';
-import { MediaRow } from '../components/MediaRow';
-import { MediaCard } from '../components/MediaCard';
-import { TrailerModal } from '../components/TrailerModal';
+import { useEffect, useMemo } from 'react'
+import { fetchHome, fetchLatestEpisodes } from '../services/anilist'
+import { fetchMalTop } from '../services/jikan'
+import { useAsync } from '../hooks/useAsync'
+import { malToCard, mediaToCard } from '../lib/mappers'
+import { getSeason, humanize } from '../lib/utils'
+import { ContinueRow } from '../components/ContinueRow'
+import { AnimeRow } from '../components/AnimeRow'
+import { LatestEpisodesRow } from '../components/LatestEpisodesRow'
+import { ErrorState } from '../components/ErrorState'
+import { GenreMarquee } from '../components/GenreMarquee'
+import { HeroCarousel } from '../components/HeroCarousel'
+import { HeroLoader } from '../components/HeroLoader'
+import { FeedEnd } from '../components/FeedEnd'
+
+// module-level: stable identity, so useAsync doesn't re-fire every render
+const fetchMal = () => fetchMalTop(18)
 
 export default function HomePage() {
-  const [homeData, setHomeData] = useState<Awaited<ReturnType<typeof fetchAnimeHome>> | null>(null);
-  const [airing, setAiring] = useState<AiringItem[]>([]);
-  const [loadingHome, setLoadingHome] = useState(true);
-  const [loadingAiring, setLoadingAiring] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [trailerMedia, setTrailerMedia] = useState<AnimeMedia | null>(null);
+  const home = useAsync(fetchHome, [])
+  const latestEpisodes = useAsync(fetchLatestEpisodes, [])
+  const malTop = useAsync(fetchMal, [])
 
-  const history = useHistory();
-  const { season, year } = getCurrentSeason();
-
-  const loadAll = useCallback(async () => {
-    setLoadingHome(true);
-    setLoadingAiring(true);
-    setError(null);
-    fetchAnimeHome()
-      .then((res) => setHomeData(res))
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load feed'))
-      .finally(() => setLoadingHome(false));
-
-    fetchLatestAiringEpisodes()
-      .then((res) => setAiring(res))
-      .catch(() => setAiring([]))
-      .finally(() => setLoadingAiring(false));
-  }, []);
+  const { season, year } = getSeason()
 
   useEffect(() => {
-    document.title = 'Anime by Adi 💀 — Stream Anime, Donghua & Read Manga in HD';
-    loadAll();
-  }, [loadAll]);
+    document.title = 'AnimeStream — Watch Anime Online Free in HD'
+  }, [])
 
-  const heroItems = (homeData?.trending || []).filter((m) => m.bannerImage || m.coverImage?.extraLarge);
+  const heroItems = useMemo(() => {
+    const list = home.data?.trending ?? []
+    const withBanner = list.filter((m) => m.bannerImage)
+    return (withBanner.length >= 8 ? withBanner : list).slice(0, 14)
+  }, [home.data])
 
-  const renderAnimeCards = (items?: AnimeMedia[], ranked = false) =>
-    (items || []).map((item, i) => (
-      <div key={item.id} className="w-[148px] sm:w-[172px] md:w-[186px] shrink-0 snap-start">
-        <MediaCard
-          href={`/anime/${item.id}`}
-          title={pickTitle(item.title)}
-          image={item.coverImage?.extraLarge || item.coverImage?.large}
-          rank={ranked ? i + 1 : undefined}
-          meta={[
-            item.format?.replace(/_/g, ' '),
-            item.seasonYear,
-            item.averageScore ? `${(item.averageScore / 10).toFixed(1)} ★` : null,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        />
-      </div>
-    ));
+  const rows = useMemo(
+    () => ({
+      trending: home.data?.trending.map(mediaToCard),
+      season: home.data?.season.map(mediaToCard),
+      popular: home.data?.popular.map(mediaToCard),
+      top: home.data?.top.map(mediaToCard),
+      upcoming: home.data?.upcoming.map(mediaToCard),
+      mal: malTop.data ? malTop.data.map(malToCard) : undefined,
+    }),
+    [home.data, malTop.data],
+  )
+
+  const err = home.error?.message
 
   return (
-    <main className="min-h-screen bg-canvas">
-      <HeroCarousel items={heroItems} loading={loadingHome} onPlayTrailer={setTrailerMedia} />
+    <main className="bg-background">
+      {/* Hero Carousel: 70% viewport height so content peeks through from below */}
+      {home.loading ? (
+        <div className="relative h-[68svh] max-h-[660px] min-h-[460px] overflow-hidden bg-background lg:h-[70svh] lg:max-h-[660px]">
+          <HeroLoader />
+        </div>
+      ) : err ? (
+        <div className="grid min-h-[60svh] place-items-center px-4 pt-20">
+          <ErrorState message={err} onRetry={home.reload} />
+        </div>
+      ) : (
+        <HeroCarousel items={heroItems} />
+      )}
 
-      <div className="space-y-11 pt-6 pb-8 sm:space-y-13">
-        <HubBar />
+      <div className="relative z-10 -mt-1 space-y-12 bg-background pb-20 pt-9 sm:space-y-14">
+        {/* Continue Watching Row */}
+        <ContinueRow />
 
-        {/* Continue Watching / Reading */}
-        {history.length > 0 && (
-          <MediaRow
-            id="continue"
-            eyebrow="Pick up right where you left off"
-            title="Jump Back In"
-            cardWidthClass="w-[220px] sm:w-[250px]"
-            skeletonAspect="landscape"
-          >
-            {history.slice(0, 14).map((entry) => (
-              <div key={entry.key} className="group relative w-[220px] sm:w-[250px] shrink-0 snap-start">
-                <MediaCard
-                  href={entry.href}
-                  title={entry.title}
-                  image={entry.image}
-                  kicker={entry.subtitle}
-                  meta={entry.kind.toUpperCase()}
-                  aspect="landscape"
-                />
-                <button
-                  type="button"
-                  onClick={() => removeHistoryItem(entry.key)}
-                  aria-label={`Remove ${entry.title} from history`}
-                  className="absolute right-2 top-2 grid size-7 place-items-center rounded-md bg-black/75 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black"
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            ))}
-          </MediaRow>
-        )}
+        {/* Latest Released Episodes Row */}
+        <LatestEpisodesRow
+          items={latestEpisodes.data ?? []}
+          loading={latestEpisodes.loading}
+        />
 
-        {/* Latest Airing Episodes */}
-        {(loadingAiring || airing.length > 0) && (
-          <MediaRow
-            id="latest-episodes"
-            eyebrow="Fresh off the air"
-            title="Just Dropped Today"
-            viewAll="/schedule"
-            loading={loadingAiring}
-            cardWidthClass="w-[228px] sm:w-[256px]"
-            skeletonAspect="landscape"
-            skeletonCount={6}
-          >
-            {airing.slice(0, 16).map((ep) => (
-              <div key={ep.id} className="w-[228px] sm:w-[256px] shrink-0 snap-start">
-                <MediaCard
-                  href={`/watch/${ep.media.id}?ep=${ep.episode}`}
-                  title={pickTitle(ep.media.title)}
-                  image={ep.media.bannerImage || ep.media.coverImage?.extraLarge || ep.media.coverImage?.large}
-                  kicker={`Episode ${ep.episode}`}
-                  meta={formatRelativeTime(ep.airingAt)}
-                  aspect="landscape"
-                />
-              </div>
-            ))}
-          </MediaRow>
-        )}
+        <GenreMarquee />
 
-        {/* Genre Quick Filter Strip */}
-        <section aria-label="Browse by genre" className="mx-auto w-full max-w-7xl px-4 sm:px-6">
-          <div className="no-scrollbar flex items-center gap-2 overflow-x-auto pb-1">
-            {ANIME_GENRES.map((genre) => (
-              <Link
-                key={genre}
-                to={`/browse?genre=${encodeURIComponent(genre)}`}
-                className="rounded-lg border border-line bg-surface px-3.5 py-2 text-xs font-medium text-muted whitespace-nowrap shrink-0 transition-colors hover:border-accent/50 hover:text-accent"
-              >
-                {genre}
-              </Link>
-            ))}
-          </div>
-        </section>
-
-        <MediaRow
+        {/* Trending Anime Shelf */}
+        <AnimeRow
           id="trending"
-          eyebrow="Everyone's watching"
-          title="Trending Right Now"
           viewAll="/trending"
-          loading={loadingHome}
-          error={error}
-          onRetry={loadAll}
-        >
-          {renderAnimeCards(homeData?.trending)}
-        </MediaRow>
+          eyebrow="Right now"
+          title="Trending Anime"
+          items={rows.trending}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-        <MediaRow
+        {/* Airing Season Anime Shelf */}
+        <AnimeRow
           id="season"
-          eyebrow={formatSeasonLabel(season, year)}
-          title="Hot This Season"
           viewAll={`/browse?season=${season}&year=${year}`}
-          loading={loadingHome}
-          error={error}
-          onRetry={loadAll}
-        >
-          {renderAnimeCards(homeData?.season)}
-        </MediaRow>
+          eyebrow={`${humanize(season)} ${year}`}
+          title="Airing This Season"
+          items={rows.season}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-        <MediaRow
+        {/* All-Time Popular Anime */}
+        <AnimeRow
           id="popular"
-          eyebrow="Iconic hits & fan favorites"
-          title="Hall of Fame"
           viewAll="/popular"
-          loading={loadingHome}
-          error={error}
-          onRetry={loadAll}
-        >
-          {renderAnimeCards(homeData?.popular)}
-        </MediaRow>
+          eyebrow="Fan favourites"
+          title="All-Time Popular"
+          items={rows.popular}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-        <MediaRow
+        {/* AniList Top 18 */}
+        <AnimeRow
           id="top"
-          eyebrow="Highest rated classics & bangers"
-          title="Top Rated Gems"
           viewAll="/top"
-          loading={loadingHome}
-          error={error}
-          onRetry={loadAll}
-        >
-          {renderAnimeCards(homeData?.top, true)}
-        </MediaRow>
+          eyebrow="Highest rated"
+          title="Top 18 on AniList"
+          items={rows.top}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+          ranked
+        />
 
-        <MediaRow
+        {/* MyAnimeList Top */}
+        <AnimeRow
+          id="mal"
+          eyebrow="MyAnimeList"
+          title="Top on MyAnimeList"
+          items={rows.mal}
+          loading={malTop.loading}
+          error={malTop.error?.message}
+          onRetry={malTop.reload}
+        />
+
+        {/* Upcoming Anime */}
+        <AnimeRow
           id="upcoming"
-          eyebrow="Hype radar"
-          title="Dropping Soon"
           viewAll="/browse?status=NOT_YET_RELEASED"
-          loading={loadingHome}
-          error={error}
-          onRetry={loadAll}
-        >
-          {renderAnimeCards(homeData?.upcoming)}
-        </MediaRow>
-      </div>
+          eyebrow="Mark your calendar"
+          title="Coming Soon"
+          items={rows.upcoming}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-      <TrailerModal media={trailerMedia} onClose={() => setTrailerMedia(null)} />
+        {!home.loading && !err && (
+          <FeedEnd
+            browseTo="/browse"
+            browseLabel="Browse All Anime"
+            subtitle="You've explored every curated shelf on the home feed. Filter the complete anime catalog or jump back to the top."
+          />
+        )}
+      </div>
     </main>
-  );
+  )
 }

@@ -1,109 +1,233 @@
-import { createClient, type User } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js'
 
-export const SUPABASE_URL = 'https://ucmdypeujpesnhetvshg.supabase.co';
-export const SUPABASE_ANON_KEY = 'sb_publishable_sMODQ5GYPITHdSp04kyuTQ_aXS9Syuk';
+const DEFAULT_SUPABASE_URL = 'https://gvoounlalkncxqovjmij.supabase.co'
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_nmrvTnKRPrm_bIdpF-a4EQ_efKyaVGl'
+const LEGACY_ZENKAI_REF = 'wcvazatblggnbnrguopj'
+
+const rawUrl = ((typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) as string | undefined)?.trim() || ''
+const rawKey = ((typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) as string | undefined)?.trim() || ''
+
+const isLegacyZenkaiEnv = rawUrl.includes(LEGACY_ZENKAI_REF)
+const envUrl = (!rawUrl || isLegacyZenkaiEnv) ? DEFAULT_SUPABASE_URL : rawUrl
+const envKey = (!rawKey || isLegacyZenkaiEnv) ? DEFAULT_SUPABASE_ANON_KEY : rawKey
+
+export const isSecretKeyProvided = Boolean(envKey && envKey.startsWith('sb_secret_'))
+const validUrl = Boolean(envUrl && !envUrl.includes('placeholder') && /^https?:\/\/.+/.test(envUrl))
+const validKey = Boolean(envKey && !envKey.includes('placeholder') && envKey.length > 10 && !isSecretKeyProvided)
+
+export const isSupabaseConfigured = validUrl && validKey
+export const SUPABASE_URL = validUrl ? envUrl : 'https://placeholder-project.supabase.co'
+export const SUPABASE_ANON_KEY = validKey ? envKey : 'placeholder-anon-key'
+
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem(`sb-${LEGACY_ZENKAI_REF}-auth-token`)
+  } catch {}
+}
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: true,
+    detectSessionInUrl: false,
   },
-});
+})
 
-export type SupabaseUser = User;
-
-export function sanitizeDocId(raw: string): string {
-  const cleaned = raw.replace(/[^a-zA-Z0-9_:-]/g, '_').slice(0, 128);
-  return cleaned || 'item';
+export interface CommunityPost {
+  id: string
+  created_at: string
+  user_id?: string | null
+  username: string
+  avatar_url: string | null
+  frame?: string | null
+  title: string
+  content: string
+  category: string
+  anime_title: string | null
+  anime_id: string | null
+  anime_image?: string | null
+  likes: number
+  pinned: boolean
+  edited?: boolean
 }
 
-export async function signInWithEmailPassword(email: string, password: string) {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
-  if (error) throw error;
-  return data;
+export interface StreamReport {
+  id?: string
+  created_at?: string
+  anime_id?: string | null
+  anime_title: string
+  episode: string
+  server?: string
+  audio_type?: string
+  issue_type: string
+  details?: string
+  playback_time?: string
+  status?: string
 }
 
-export async function signUpWithEmailPassword(email: string, password: string, fullName?: string) {
-  const cleanName = (fullName || '').trim();
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: cleanName
-      ? {
-          data: {
-            full_name: cleanName,
-          },
+export async function getCommunityPosts(category?: string, limit = 150): Promise<CommunityPost[]> {
+  try {
+    let query = supabase
+      .from('community_posts')
+      .select('*')
+      .order('pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    if (category && category !== 'All') {
+      query = query.eq('category', category)
+    }
+
+    const { data, error } = await query
+    if (error) throw error
+    return data || []
+  } catch (err) {
+    console.warn('[Supabase] Failed to fetch community posts:', err)
+    return []
+  }
+}
+
+export async function createCommunityPost(post: {
+  title: string
+  content: string
+  user_id?: string | null
+  username?: string
+  avatar_url?: string | null
+  frame?: string | null
+  category?: string
+  anime_title?: string
+  anime_id?: string
+  anime_image?: string
+}): Promise<CommunityPost | null> {
+  try {
+    let resolvedUserId = post.user_id || null
+    if (!resolvedUserId) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.user?.id) {
+          resolvedUserId = session.user.id
         }
-      : undefined,
-  });
-  if (error) throw error;
-  return data;
-}
-
-export async function signOutUser() {
-  try {
-    await supabase.auth.signOut({ scope: 'local' });
-  } catch (error) {
-    console.warn('Supabase local sign out warning:', error);
-  }
-  try {
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('sb-') && key.includes('auth-token')) {
-        localStorage.removeItem(key);
+      } catch {
+        // guest or anon
       }
     }
-  } catch {
-    // Ignore storage access errors
+
+    const { data, error } = await supabase
+      .from('community_posts')
+      .insert([
+        {
+          user_id: resolvedUserId,
+          title: post.title.trim(),
+          content: post.content.trim(),
+          username: post.username?.trim() || 'Otaku',
+          avatar_url: post.avatar_url || null,
+          frame: post.frame || null,
+          category: post.category || 'General',
+          anime_title: post.anime_title?.trim() || null,
+          anime_id: post.anime_id || null,
+          anime_image: post.anime_image || null,
+          likes: 0,
+          pinned: false,
+          edited: false,
+        },
+      ])
+      .select()
+      .single()
+
+    if (error) throw error
+    return data
+  } catch (err) {
+    console.error('[Supabase] Error creating community post:', err)
+    throw err
   }
 }
 
-export async function verifyActiveSupabaseUser(): Promise<'valid' | 'revoked' | 'network_error'> {
+export async function updateCommunityPost(id: string, content: string): Promise<boolean> {
   try {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
-    if (!token) return 'revoked';
+    const { error } = await supabase
+      .from('community_posts')
+      .update({ content: content.trim(), edited: true })
+      .eq('id', id)
 
-    const { data, error } = await supabase.auth.getUser(token);
+    if (error) throw error
+    return true
+  } catch (err) {
+    console.error('[Supabase] Error updating post:', err)
+    return false
+  }
+}
+
+export async function deleteCommunityPost(id: string): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from('community_posts')
+      .delete()
+      .eq('id', id)
+
+    if (error) throw error
+    return true
+  } catch (err) {
+    console.error('[Supabase] Error deleting post:', err)
+    return false
+  }
+}
+
+export async function likeCommunityPost(id: string, currentLikes: number): Promise<number> {
+  try {
+    const { data, error } = await supabase.rpc('like_community_post', { target_post_id: id })
+    if (error) throw error
+    return typeof data === 'number' ? data : currentLikes + 1
+  } catch (err) {
+    console.error('[Supabase] Error liking post:', err)
+    return currentLikes
+  }
+}
+
+function generateReportId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
+export async function submitStreamReport(report: StreamReport): Promise<{ success: boolean; id?: string; error?: string }> {
+  const reportId = report.id || generateReportId()
+  const payload = {
+    id: reportId,
+    anime_id: report.anime_id || null,
+    anime_title: report.anime_title,
+    episode: String(report.episode),
+    server: report.server || 'Auto',
+    audio_type: report.audio_type || 'sub',
+    issue_type: report.issue_type,
+    details: report.details || null,
+    playback_time: report.playback_time || null,
+    status: 'pending',
+    user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+  }
+
+  try {
+    // Do not chain .select() here: the reports table allows public INSERT
+    // but restricts public SELECT via RLS, so .select() triggers a 42501 RLS error.
+    const { error } = await supabase
+      .from('reports')
+      .insert([payload])
+
     if (error) {
-      const status = Number((error as { status?: number }).status || 0);
-      const code = String((error as { code?: string }).code || '').toLowerCase();
-      const msg = String(error.message || '').toLowerCase();
-      if (
-        status === 401 ||
-        status === 403 ||
-        status === 404 ||
-        code === 'user_banned' ||
-        code === 'user_not_found' ||
-        code === 'bad_jwt' ||
-        code === 'session_not_found' ||
-        code === 'session_expired' ||
-        /banned|does not exist|not exist|not found|deleted|invalid|expired|jwt|unauthorized|forbidden/.test(msg)
-      ) {
-        return 'revoked';
-      }
-      return 'network_error';
+      // Fallback: try inserting without explicit id in case column default is enforced
+      const { id: _omitId, ...payloadWithoutId } = payload
+      const retry = await supabase.from('reports').insert([payloadWithoutId])
+      if (retry.error) throw retry.error
     }
 
-    const user = data?.user as
-      | (SupabaseUser & { banned_until?: string; deleted_at?: string })
-      | null;
-    if (!user || !user.id) return 'revoked';
-    if (user.deleted_at) return 'revoked';
-    if (user.banned_until && Date.parse(user.banned_until) > Date.now()) return 'revoked';
-    if (user.app_metadata?.banned === true) return 'revoked';
-
-    return 'valid';
-  } catch {
-    return 'network_error';
+    return { success: true, id: reportId }
+  } catch (err: any) {
+    console.warn('[Supabase] Error submitting stream report:', err)
+    return { success: false, error: err?.message || 'Failed to submit report' }
   }
 }
 
-export async function getAccessToken(): Promise<string | null> {
-  const { data } = await supabase.auth.getSession();
-  return data.session?.access_token || null;
-}

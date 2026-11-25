@@ -1,173 +1,183 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Search } from 'lucide-react';
-import type { MangaItem } from '../types';
-import { fetchMangaHome, searchManga } from '../lib/api';
-import { HubBar } from '../components/HubBar';
-import { MediaRow } from '../components/MediaRow';
-import { MediaCard } from '../components/MediaCard';
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Compass, Info } from 'lucide-react'
+import { useAsync } from '../hooks/useAsync'
+import { useDebounced } from '../hooks/useDebounced'
+import { DEFAULT_MANGA_SOURCE, MANGA_SOURCES, isMangaSource, mangaHref, mangaSourceInfo, resolveMangaSource } from '../lib/mangaModels'
+import { fetchMangaHome, findOnServersHref, MANGA_KINDS, proxiedImage, searchAniListManga, searchManga, type AniMangaHit, type MangaItem, type MangaKind, type MangaScope } from '../services/manga'
+import type { BookCardItem } from '../components/BookCard'
+import { BookGrid } from '../components/BookGrid'
+import { BookRow } from '../components/BookRow'
+import { ContinueReading } from '../components/ContinueReading'
+import { DiscoverHero } from '../components/DiscoverHero'
+import { ErrorState } from '../components/ErrorState'
+import { Tabs } from '../components/Tabs'
+import { FeedEnd } from '../components/FeedEnd'
+import { cn } from '../lib/utils'
 
-interface MangaHomePageProps {
-  kind?: 'manga' | 'manhwa';
+const SOURCE_KEY = 'zk:manga-source:v1'
+const storedSource = (): MangaScope => {
+  try {
+    const v = localStorage.getItem(SOURCE_KEY)
+    return v === 'all' || isMangaSource(v) ? v : DEFAULT_MANGA_SOURCE
+  } catch {
+    return DEFAULT_MANGA_SOURCE
+  }
 }
 
-export default function MangaHomePage({ kind = 'manga' }: MangaHomePageProps) {
-  const [home, setHome] = useState<Awaited<ReturnType<typeof fetchMangaHome>> | null>(null);
-  const [query, setQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<MangaItem[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+const toCard = (m: MangaItem): BookCardItem => ({
+  key: `${m.source}:${m.id}`,
+  href: mangaHref(m),
+  title: m.title,
+  image: m.poster ? proxiedImage(m.poster, m.source) : '',
+  score: m.score ? m.score.toFixed(1) : null,
+  badge: m.kind ?? (m.type && m.type.length < 9 ? m.type : null),
+  caption: m.latest ?? (m.chapters ? `${m.chapters} chapters` : m.status),
+})
 
-  const label = kind === 'manhwa' ? 'Manhwa' : 'Manga';
-  const baseRoute = kind === 'manhwa' ? '/manhwa' : '/manga';
+const toAniCard = (m: AniMangaHit): BookCardItem => ({
+  key: `anilist:${m.id}`,
+  href: findOnServersHref(m),
+  title: m.title,
+  image: m.cover,
+  score: m.score ? m.score.toFixed(1) : null,
+  badge: m.kind,
+  caption: ['Search all servers', m.year].filter(Boolean).join(' · '),
+})
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+export default function MangaHomePage() {
+  const [params, setParams] = useSearchParams()
+  // ?source= wins, otherwise the server this visitor picked last time
+  const urlSource = params.get('source')
+  const source: MangaScope = urlSource ? (urlSource === 'all' ? 'all' : resolveMangaSource(urlSource)) : storedSource()
+  const everywhere = source === 'all'
+  const sourceName = everywhere ? 'any server' : mangaSourceInfo(source).displayName
+  const [kind, setKind] = useState<MangaKind | null>(null)
+  const [query, setQuery] = useState('')
+  const term = useDebounced(query.trim(), 400)
+  const home = useAsync(() => fetchMangaHome(source), [source])
+  const found = useAsync(() => (term ? searchManga(term, source) : Promise.resolve(null)), [term, source])
+  const ani = useAsync(() => (term ? searchAniListManga(term) : Promise.resolve(null)), [term])
+
+  function setSource(s: MangaScope) {
     try {
-      const data = await fetchMangaHome(kind);
-      setHome(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load MangaDex feed');
-    } finally {
-      setLoading(false);
+      localStorage.setItem(SOURCE_KEY, s)
+    } catch {
+      /* blocked storage: the choice lasts for this visit */
     }
-  }, [kind]);
+    const next = new URLSearchParams(params)
+    if (s === DEFAULT_MANGA_SOURCE) next.delete('source')
+    else next.set('source', s)
+    next.delete('search')
+    setParams(next, { replace: true })
+  }
 
   useEffect(() => {
-    document.title = `${label} Hub — Anime by Adi 💀`;
-    load();
-  }, [label, load]);
-
+    document.title = 'Manga — AnimeStream'
+  }, [])
   useEffect(() => {
-    const q = query.trim();
-    if (!q) {
-      setSearchResults(null);
-      return;
-    }
-    let cancelled = false;
-    setSearching(true);
-    const timer = window.setTimeout(async () => {
-      try {
-        const res = await searchManga(q, kind);
-        if (!cancelled) setSearchResults(res.results);
-      } catch {
-        if (!cancelled) setSearchResults([]);
-      } finally {
-        if (!cancelled) setSearching(false);
-      }
-    }, 320);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [query, kind]);
+    if (params.get('search') === '1') document.getElementById('discover-search')?.focus()
+  }, [params])
 
-  const renderCards = (items?: MangaItem[]) =>
-    (items || []).map((item) => (
-      <div key={item.id} className="w-[148px] sm:w-[172px] md:w-[186px] shrink-0 snap-start">
-        <MediaCard
-          href={`${baseRoute}/${item.id}`}
-          title={item.title}
-          image={item.cover}
-          meta={[item.kind, item.year, item.status].filter(Boolean).join(' · ')}
-        />
-      </div>
-    ));
+  const byKind = (list?: MangaItem[]) => (kind ? list?.filter((m) => m.kind === kind) : list)
+  const rows = useMemo(
+    () => ({
+      trending: byKind(home.data?.trending)?.map(toCard),
+      latest: byKind(home.data?.latest)?.map(toCard),
+      fresh: byKind(home.data?.newRelease)?.map(toCard),
+    }),
+    [home.data, kind], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const aniResults = useMemo(() => (ani.data ?? []).filter((m) => !kind || m.kind === kind).map(toAniCard), [ani.data, kind])
+  const results = useMemo(() => byKind(found.data ?? undefined)?.map(toCard), [found.data, kind]) // eslint-disable-line react-hooks/exhaustive-deps
+  const kindPicker = (
+    <div role="group" aria-label="Filter by kind" className="no-scrollbar mx-auto flex max-w-7xl gap-2 overflow-x-auto px-4 sm:px-6">
+      {[null, ...MANGA_KINDS].map((k) => (
+        <button
+          key={k ?? 'all'}
+          type="button"
+          aria-pressed={kind === k}
+          onClick={() => setKind(k)}
+          className={cn(
+            'shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition active:scale-95',
+            kind === k ? 'border-foreground bg-foreground text-background' : 'border-border bg-card/60 text-muted hover:text-foreground',
+          )}
+        >
+          {k ?? 'All kinds'}
+        </button>
+      ))}
+      <Link to="/manga/browse" className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-accent-fg transition active:scale-95">
+        <Compass className="size-4" /> Browse all
+      </Link>
+    </div>
+  )
 
   return (
-    <main className="min-h-screen bg-canvas pt-20 pb-16">
-      <HubBar />
+    <main>
+      <DiscoverHero
+        eyebrow="Manga · updated daily"
+        title="Binge the latest"
+        accent="chapters, the moment they drop."
+        subtitle="Manga, manhwa and manhua from five servers, or search them all at once. Webtoon scroll or paged reading, with your place saved automatically."
+        query={query}
+        onQuery={setQuery}
+        placeholder="Search manga…"
+      >
+        <Tabs tabs={[{ id: 'all' as MangaScope, label: 'All' }, ...MANGA_SOURCES.map((x) => ({ id: x.id as MangaScope, label: x.displayName }))]} value={source} onChange={setSource} />
+      </DiscoverHero>
 
-      <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold text-teal">Live MangaDex Catalog</p>
-            <h1 className="font-display text-3xl font-extrabold tracking-tight text-ink sm:text-4xl">
-              {label} Hub
-            </h1>
-            <p className="mt-1 text-sm text-muted">
-              Read {kind === 'manhwa' ? 'full-color Korean webtoons and manhwa' : 'Japanese manga and serialized chapters'} directly in your browser.
-            </p>
-          </div>
-
-          <div className="relative w-full sm:w-80">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search ${label.toLowerCase()}...`}
-              className="w-full rounded-lg border border-line bg-surface py-2.5 pl-10 pr-4 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
-            />
-          </div>
-        </div>
-      </div>
-
-      {query.trim() ? (
-        <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6">
-          <h2 className="mb-4 font-display text-xl font-bold text-ink">
-            Search Results for &ldquo;{query}&rdquo;
-          </h2>
-          {searching ? (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="space-y-2.5">
-                  <div className="skeleton-shimmer aspect-[2/3] w-full rounded-xl border border-line" />
-                  <div className="skeleton-shimmer h-3.5 w-3/4 rounded" />
-                  <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+      <div className="relative z-10 space-y-12 pb-20 sm:space-y-16">
+        {term ? (
+          <section>
+            <div className="mx-auto mb-5 max-w-7xl px-4 sm:px-6">
+              <p className="mb-1 eyebrow text-accent">Search</p>
+              <h2 className="font-display text-2xl font-bold tracking-tight">Results for “{term}”{everywhere && <span className="text-muted"> · all servers</span>}</h2>
+            </div>
+            {kindPicker}
+            <div className="h-5" />
+            {(ani.loading || aniResults.length > 0) && (
+              <div className="mb-12">
+                <div className="mx-auto mb-4 max-w-7xl px-4 sm:px-6">
+                  <h3 className="font-display text-xl font-bold tracking-tight">Find by name</h3>
+                  <p className="text-xs text-muted">Matched on AniList. Pick one and it is looked up on every server by all of its names.</p>
                 </div>
-              ))}
+                <BookGrid items={aniResults} loading={ani.loading} empty="" />
+              </div>
+            )}
+            <div className="mx-auto mb-4 max-w-7xl px-4 sm:px-6">
+              <h3 className="font-display text-xl font-bold tracking-tight">On {sourceName}</h3>
             </div>
-          ) : searchResults && searchResults.length > 0 ? (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-              {searchResults.map((item) => (
-                <MediaCard
-                  key={item.id}
-                  href={`${baseRoute}/${item.id}`}
-                  title={item.title}
-                  image={item.cover}
-                  meta={[item.kind, item.year, item.status].filter(Boolean).join(' · ')}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="py-10 text-sm text-muted">No {label.toLowerCase()} found matching that title.</p>
-          )}
-        </div>
-      ) : (
-        <div className="mt-10 space-y-12">
-          <MediaRow
-            eyebrow="Most followed"
-            title={`Trending ${label}`}
-            loading={loading}
-            error={error}
-            onRetry={load}
-          >
-            {renderCards(home?.trending)}
-          </MediaRow>
-
-          <MediaRow
-            eyebrow="Fresh translations"
-            title="Recently Updated Chapters"
-            loading={loading}
-            error={error}
-            onRetry={load}
-          >
-            {renderCards(home?.latest)}
-          </MediaRow>
-
-          <MediaRow
-            eyebrow="Community favorites"
-            title={`Top Rated ${label}`}
-            loading={loading}
-            error={error}
-            onRetry={load}
-          >
-            {renderCards(home?.topRated)}
-          </MediaRow>
-        </div>
-      )}
+            {found.error ? (
+              <ErrorState message={found.error.message} onRetry={found.reload} />
+            ) : (
+              <BookGrid items={results} loading={found.loading} empty={`Nothing on ${sourceName} under “${term}”.${aniResults.length ? ' Try one of the matches above.' : ''}`} />
+            )}
+          </section>
+        ) : home.error ? (
+          <ErrorState message={home.error.message} onRetry={home.reload} />
+        ) : (
+          <>
+            <ContinueReading kind="manga" />
+            {kindPicker}
+            {home.data?.fallback && (
+              <p className="mx-auto flex max-w-7xl items-start gap-2 px-4 text-xs text-muted sm:px-6">
+                <Info className="mt-0.5 size-3.5 shrink-0" />
+                {sourceName === 'any server' ? 'No server answered' : `${sourceName} didn’t answer`}, so this shelf is AniList&rsquo;s trending list. Opening a title looks it up again. You can also try another server above.
+              </p>
+            )}
+            <BookRow eyebrow="Right now" title="Trending Manga" items={rows.trending} loading={home.loading} ranked />
+            <BookRow eyebrow="Fresh chapters" title="Latest Updates" items={rows.latest} loading={home.loading} />
+            <BookRow eyebrow="Just added" title="New Releases" items={rows.fresh} loading={home.loading} />
+            {!home.loading && (
+              <FeedEnd
+                browseTo="/manga/browse"
+                browseLabel="Browse All Manga"
+                subtitle="You've reached the end of the manga shelves. Explore the full manga catalog with genre and format filters."
+              />
+            )}
+          </>
+        )}
+      </div>
     </main>
-  );
+  )
 }

@@ -1,198 +1,263 @@
-import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { BookOpen, Bookmark, Check, ExternalLink } from 'lucide-react';
-import type { NovelDetail } from '../types';
-import { fetchNovelDetail } from '../lib/api';
-import { removeFromWatchlist, upsertWatchlist, useWatchlist } from '../lib/storage';
-import { MediaImage } from '../components/MediaImage';
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { useMarkDetails, useSmartBack } from '../lib/backToDetails'
+import { ArrowLeft, ArrowUpDown, BookOpen, Search } from 'lucide-react'
+import { useAsync } from '../hooks/useAsync'
+import { useReading } from '../lib/reading'
+import { cn } from '../lib/utils'
+import { chapterUnit, fetchNovelChapters, fetchNovelDetail, isNovelSource, NOVEL_SOURCES, type NovelChapterRef, type NovelSource } from '../services/novel'
+import { ErrorState } from '../components/ErrorState'
+import { Reveal } from '../components/Reveal'
+import { ShimmerButton } from '../components/ShimmerButton'
+import { Skeleton } from '../components/Skeleton'
+import { StarBorder } from '../components/StarBorder'
+import NotFoundPage from './NotFoundPage'
+
+const PAGE = 100
 
 export default function NovelDetailsPage() {
-  const { slug } = useParams();
-  const [detail, setDetail] = useState<NovelDetail | null>(null);
-  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { source: src, slug = '' } = useParams()
+  if (!isNovelSource(src) || !slug) return <NotFoundPage />
+  return <Details source={src} slug={slug} />
+}
 
-  const watchlist = useWatchlist();
-  const key = `novel:${slug}`;
-  const saved = watchlist.some((w) => w.key === key);
+function Details({ source, slug }: { source: NovelSource; slug: string }) {
+  const unit = chapterUnit(source)
+  useMarkDetails()
+  const detail = useAsync(() => fetchNovelDetail(source, slug), [source, slug])
+  const chapters = useAsync(() => fetchNovelChapters(source, slug), [source, slug])
+  const saved = useReading('novel').find((r) => r.id === `${source}:${slug}`)
 
+  const [asc, setAsc] = useState(true)
+  const [range, setRange] = useState(0)
+  const [filter, setFilter] = useState('')
+  const [open, setOpen] = useState(false)
+  const [coverOk, setCoverOk] = useState(true)
+
+  const d = detail.data
   useEffect(() => {
-    if (!slug) return;
-    let cancelled = false;
-    setLoading(true);
-    setSynopsisExpanded(false);
-    setError(null);
+    document.title = `${d?.title ?? 'Novel'} — AnimeStream`
+    window.scrollTo({ top: 0 })
+  }, [d?.title])
 
-    fetchNovelDetail(slug)
-      .then((d) => {
-        if (cancelled) return;
-        setDetail(d);
-        document.title = `${d.title} — Anime by Adi 💀`;
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load novel');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+  const list = chapters.data ?? []
+  const shown = useMemo<NovelChapterRef[]>(() => {
+    const f = filter.trim().toLowerCase()
+    const base = f ? list.filter((c) => c.number === f || c.title.toLowerCase().includes(f) || `chapter ${c.number}`.includes(f)) : list
+    return asc ? base : [...base].reverse()
+  }, [list, asc, filter])
+  const pages = Math.ceil(shown.length / PAGE)
+  const slice = shown.slice(range * PAGE, range * PAGE + PAGE)
+  useEffect(() => setRange(0), [asc, filter])
 
-    return () => {
-      cancelled = true;
-    };
-  }, [slug]);
+  const first = list[0]
+  const resume = saved?.resume ?? (first ? `/novel/${source}/${encodeURIComponent(slug)}/read/${encodeURIComponent(first.slug)}` : null)
 
-  if (loading) {
+  const back = useSmartBack('/novel')
+
+  if (detail.error && !d)
     return (
-      <main className="min-h-screen bg-canvas pt-24 pb-16">
-        <div className="mx-auto max-w-6xl space-y-6 px-4 sm:px-6">
-          <div className="flex flex-col gap-6 sm:flex-row">
-            <div className="skeleton-shimmer h-72 w-48 shrink-0 rounded-xl border border-line" />
-            <div className="flex-1 space-y-3">
-              <div className="skeleton-shimmer h-8 w-72 max-w-full rounded" />
-              <div className="skeleton-shimmer h-4 w-44 rounded" />
-              <div className="skeleton-shimmer h-24 w-full rounded-xl" />
-              <div className="flex gap-3 pt-2">
-                <div className="skeleton-shimmer h-10 w-36 rounded-lg" />
-                <div className="skeleton-shimmer h-10 w-28 rounded-lg" />
-              </div>
-            </div>
-          </div>
-        </div>
+      <main className="grid min-h-[70svh] place-items-center px-4 pt-24">
+        <ErrorState message={detail.error.message} onRetry={detail.reload} />
       </main>
-    );
-  }
+    )
 
-  if (error || !detail) {
-    return (
-      <main className="grid min-h-[70vh] place-items-center bg-canvas px-4 pt-20">
-        <div className="text-center">
-          <p className="text-base font-semibold text-ink">{error || 'Novel not found'}</p>
-          <Link to="/novel" className="mt-4 inline-block text-sm font-semibold text-accent hover:underline">
-            Back to Novels
-          </Link>
-        </div>
-      </main>
-    );
-  }
-
-  const firstChapter = detail.chapters[0];
-
-  const toggleSave = () => {
-    if (saved) {
-      removeFromWatchlist(key);
-    } else {
-      upsertWatchlist({
-        key,
-        kind: 'novel',
-        id: detail.slug,
-        title: detail.title,
-        image: detail.cover,
-        href: `/novel/${detail.slug}`,
-        status: 'watching',
-      });
-    }
-  };
+  const synopsis = d?.synopsis ?? ''
+  const long = synopsis.length > 420
 
   return (
-    <main className="min-h-screen bg-canvas pt-24 pb-16">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
-          <div className="w-44 shrink-0 overflow-hidden rounded-xl border border-line bg-surface shadow-lg sm:w-52">
-            <div className="aspect-[2/3] w-full">
-              <MediaImage src={detail.cover} alt={detail.title} className="h-full w-full object-cover" />
-            </div>
-          </div>
+    <main className="overscroll-y-none pb-20">
+      <section className="relative overflow-x-clip bg-background px-4 pb-10 pt-6 sm:px-6 sm:pt-8">
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 bottom-3 overflow-hidden">
+          {d?.cover && coverOk && <img src={d.cover} alt="" referrerPolicy="no-referrer" onError={() => setCoverOk(false)} className="absolute inset-0 h-full w-full scale-125 object-cover opacity-30 blur-3xl" />}
+          <div aria-hidden className="pointer-events-none absolute inset-0 bg-gradient-to-b from-background/40 via-background/70 to-background" />
+        </div>
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -bottom-4 h-36"
+          style={{
+            background:
+              'linear-gradient(to top, var(--background) 0%, var(--background) 20%, color-mix(in srgb, var(--background) 85%, transparent) 46%, transparent 100%)',
+          }}
+        />
 
-          <div className="flex-1 space-y-3">
-            <p className="text-xs font-semibold text-teal">
-              {[detail.author, detail.status].filter(Boolean).join(' · ')}
-            </p>
-            <h1 className="font-display text-3xl font-extrabold tracking-tight text-ink sm:text-4xl" style={{ textWrap: 'balance' }}>
-              {detail.title}
-            </h1>
-            {detail.genres.length > 0 && (
-              <p className="text-xs font-medium text-accent">{detail.genres.join(' · ')}</p>
-            )}
-            {detail.summary && (
-              <div className="max-w-xl pt-1">
-                <h2 className="font-display text-xs font-bold tracking-wide text-ink sm:text-[13px]">
-                  Synopsis Description
-                </h2>
-                <p
-                  className={`mt-1 whitespace-pre-line text-[11px] leading-relaxed text-muted sm:text-xs ${
-                    synopsisExpanded ? '' : 'line-clamp-2'
-                  }`}
-                >
-                  {detail.summary}
-                </p>
-                {detail.summary.length > 130 && (
-                  <button
-                    type="button"
-                    onClick={() => setSynopsisExpanded((prev) => !prev)}
-                    className="mt-1 text-[11px] font-semibold text-sky-400 hover:underline"
-                  >
-                    {synopsisExpanded ? 'Show less' : 'Read more'}
-                  </button>
-                )}
-              </div>
-            )}
+        <div className="relative z-20 mx-auto max-w-6xl">
+          <button type="button" onClick={back} className="mb-6 inline-flex cursor-pointer touch-manipulation items-center gap-2 rounded-full border border-border bg-card/90 px-4 py-2 text-sm font-medium transition hover:bg-card active:scale-95">
+            <ArrowLeft className="size-4" /> Back
+          </button>
 
-            <div className="flex flex-wrap items-center gap-3 pt-2">
-              {firstChapter && (
-                <Link
-                  to={`/novel/${detail.slug}/read/${firstChapter.slug}`}
-                  className="inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-accent-ink"
-                >
-                  <BookOpen className="size-4" />
-                  <span>Read Chapter 1</span>
-                </Link>
+          <div className="flex flex-col gap-8 md:flex-row md:gap-10">
+            <div className="relative mx-auto aspect-[2/3] w-52 shrink-0 overflow-hidden rounded-3xl border border-border bg-card-2 shadow-2xl shadow-black/30 md:mx-0 md:w-64">
+              {!d ? (
+                <Skeleton className="size-full rounded-none" />
+              ) : coverOk && d.cover ? (
+                <img src={d.cover} alt={d.title} referrerPolicy="no-referrer" onError={() => setCoverOk(false)} className="size-full object-cover" />
+              ) : (
+                <div className="grid size-full place-items-center p-4 text-center font-display text-lg font-bold text-muted">{d.title}</div>
               )}
-              <button
-                type="button"
-                onClick={toggleSave}
-                className={`inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium ${
-                  saved ? 'border-teal/50 bg-teal/15 text-teal' : 'border-line bg-surface text-ink hover:border-accent/40'
-                }`}
-              >
-                {saved ? <Check className="size-4" /> : <Bookmark className="size-4" />}
-                <span>{saved ? 'Saved' : 'Save'}</span>
-              </button>
-              <a
-                href={detail.sourceUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-4 py-2.5 text-sm font-medium text-muted hover:text-ink"
-              >
-                <span>Source</span>
-                <ExternalLink className="size-3.5" />
-              </a>
+            </div>
+
+            <div className="min-w-0 flex-1 text-center md:text-left">
+              {!d ? (
+                <div className="space-y-4">
+                  <Skeleton className="mx-auto h-10 w-3/4 md:mx-0" />
+                  <Skeleton className="mx-auto h-4 w-1/3 md:mx-0" />
+                  <Skeleton className="h-24 w-full" />
+                </div>
+              ) : (
+                <>
+                  <p className="mb-2 eyebrow text-accent">
+                    {NOVEL_SOURCES.find((s) => s.id === source)?.label} · {source === 'lnori' ? 'Light novel' : 'Web novel'}
+                  </p>
+                  <h1 className="font-display text-3xl font-black leading-tight tracking-tight [text-wrap:balance]">{d.title}</h1>
+                  <p className="mt-2 text-sm text-muted">
+                    by <span className="font-medium text-foreground">{d.author}</span>
+                    {list.length > 0 && <> · {list.length.toLocaleString()} {unit}s</>}
+                  </p>
+
+                  <ul className="mt-4 flex flex-wrap justify-center gap-2 md:justify-start">
+                    {d.genres.slice(0, 8).map((g) => (
+                      <li key={g} className="rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-medium text-muted">
+                        {g}
+                      </li>
+                    ))}
+                  </ul>
+
+                  <p className={cn('mt-5 whitespace-pre-line text-sm leading-relaxed text-muted', !open && long && 'line-clamp-5')}>{synopsis}</p>
+                  {long && (
+                    <button type="button" onClick={() => setOpen((o) => !o)} className="mt-2 text-sm font-semibold text-accent hover:underline">
+                      {open ? 'Show less' : 'Read more'}
+                    </button>
+                  )}
+
+                  <div className="mt-7 flex flex-wrap items-center justify-center gap-3 md:justify-start">
+                    {resume ? (
+                      <StarBorder to={resume}>
+                        <BookOpen className="size-4" /> {saved ? `Continue · ${saved.label}` : source === 'lnori' ? 'Read volume 1' : 'Start reading'}
+                      </StarBorder>
+                    ) : (
+                      <span className="text-sm text-muted">{chapters.loading ? `Loading ${unit}s…` : `No ${unit}s found`}</span>
+                    )}
+                    <ShimmerButton variant="ghost" to="/novel">
+                      More novels
+                    </ShimmerButton>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
+      </section>
 
-        <section className="mt-12">
-          <h2 className="mb-4 font-display text-xl font-bold text-ink">
-            Chapters <span className="font-mono text-sm font-normal text-muted tabular-nums">({detail.chapters.length})</span>
-          </h2>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {detail.chapters.map((ch) => (
-              <Link
-                key={ch.slug}
-                to={`/novel/${detail.slug}/read/${ch.slug}`}
-                className="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 transition-colors hover:border-accent/50"
+      <Reveal>
+        <section className="mx-auto mt-4 max-w-6xl px-4 sm:px-6">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="mb-1 eyebrow text-accent">Table of contents</p>
+              <h2 className="font-display text-2xl font-bold tracking-tight">{unit === 'volume' ? 'Volumes' : 'Chapters'}</h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="relative block flex-1 sm:w-64 sm:flex-none">
+                <span className="sr-only">Find a chapter</span>
+                <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+                <input
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder={`${unit === 'volume' ? 'Volume' : 'Chapter'} number or title`}
+                  inputMode="search"
+                  className="h-10 w-full rounded-full border border-border bg-card/60 pl-10 pr-4 text-sm outline-none transition placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/30"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => setAsc((a) => !a)}
+                className="inline-flex h-10 items-center gap-2 rounded-full border border-border bg-card/60 px-4 text-sm font-medium transition hover:bg-card active:scale-95"
               >
-                <span className="font-mono text-xs font-bold text-teal tabular-nums">
-                  {ch.number}
-                </span>
-                <span className="line-clamp-1 text-xs font-medium text-ink">
-                  {ch.title}
-                </span>
-              </Link>
-            ))}
+                <ArrowUpDown className="size-4" /> {asc ? 'Oldest first' : 'Newest first'}
+              </button>
+            </div>
           </div>
+
+          {chapters.error ? (
+            <ErrorState message={chapters.error.message} onRetry={chapters.reload} />
+          ) : chapters.loading ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 rounded-2xl" />
+              ))}
+            </div>
+          ) : (
+            <>
+              {pages > 1 && (
+                <div className="no-scrollbar mb-4 flex gap-2 overflow-x-auto pb-1">
+                  {Array.from({ length: pages }, (_, i) => {
+                    const from = i * PAGE
+                    const a = shown[from]
+                    const b = shown[Math.min(from + PAGE, shown.length) - 1]
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setRange(i)}
+                        className={cn(
+                          'shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-medium transition active:scale-95',
+                          range === i ? 'border-foreground bg-foreground text-background' : 'border-border bg-card/60 text-muted hover:text-foreground',
+                        )}
+                      >
+                        {a.number}–{b.number}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {slice.length === 0 ? (
+                <p className="py-12 text-center text-sm text-muted">No {unit} matches “{filter}”.</p>
+              ) : (
+                <ul className={cn('grid gap-2 sm:grid-cols-2', unit === 'volume' && 'grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5')}>
+                  {slice.map((c) => {
+                    const isLast = saved?.resume.endsWith(`/read/${encodeURIComponent(c.slug)}`)
+                    return (
+                      <li key={c.slug}>
+                        {unit === 'volume' ? (
+                          <Link
+                            to={`/novel/${source}/${encodeURIComponent(slug)}/read/${encodeURIComponent(c.slug)}`}
+                            className={cn('group relative block overflow-hidden rounded-2xl border bg-card/60 transition hover:border-accent', isLast ? 'border-accent' : 'border-border')}
+                          >
+                            <div className="aspect-[2/3] w-full bg-card">
+                              {c.cover ? (
+                                <img src={c.cover} alt={c.title} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.visibility = 'hidden')} className="size-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                              ) : (
+                                <span className="grid size-full place-items-center font-display text-4xl font-black text-accent/60">{c.number}</span>
+                              )}
+                            </div>
+                            <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-3 pb-2.5 pt-8 text-white">
+                              <span className="block text-[10px] font-bold uppercase tracking-widest text-accent">Volume {c.number}</span>
+                              <span className="line-clamp-2 text-xs font-medium leading-snug">{c.title}</span>
+                            </span>
+                            {isLast && <span className="absolute right-2 top-2 rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold text-accent-fg">LAST READ</span>}
+                          </Link>
+                        ) : (
+                        <Link
+                          to={`/novel/${source}/${encodeURIComponent(slug)}/read/${encodeURIComponent(c.slug)}`}
+                          className={cn(
+                            'group flex items-center gap-3 rounded-2xl border bg-card/60 px-4 py-3 transition hover:border-accent hover:bg-card',
+                            isLast ? 'border-accent' : 'border-border',
+                          )}
+                        >
+                          <span className="w-12 shrink-0 font-display text-sm font-bold text-accent">{c.number}</span>
+                          <span className="min-w-0 flex-1 truncate text-sm transition-colors group-hover:text-accent">{c.title}</span>
+                          {isLast && <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold text-accent-fg">LAST READ</span>}
+                        </Link>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </>
+          )}
         </section>
-      </div>
+      </Reveal>
     </main>
-  );
+  )
 }

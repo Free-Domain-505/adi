@@ -1,6 +1,6 @@
 {
-  "name": "Aadhi",
-  "description": "Watch anime, donghua, movies & TV shows in HD, and read manga, manhwa & light novels in one fast place.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "name": "AnimeStream",
+  "description": "Watch anime and movies, read manga and novels in HD with multi-audio streaming and tracking.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

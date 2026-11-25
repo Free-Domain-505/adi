@@ -1,107 +1,121 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { AnimeMedia } from '../types';
-import { fetchDonghuaHome, pickTitle } from '../lib/api';
-import { HeroCarousel } from '../components/HeroCarousel';
-import { HubBar } from '../components/HubBar';
-import { MediaRow } from '../components/MediaRow';
-import { MediaCard } from '../components/MediaCard';
-import { TrailerModal } from '../components/TrailerModal';
+import { useEffect, useMemo } from 'react'
+import { fetchDonghuaHome } from '../services/anilist'
+import { useAsync } from '../hooks/useAsync'
+import { mediaToCard } from '../lib/mappers'
+import { ContinueRow } from '../components/ContinueRow'
+import { AnimeRow } from '../components/AnimeRow'
+import { ErrorState } from '../components/ErrorState'
+import { HeroCarousel } from '../components/HeroCarousel'
+import { HeroLoader } from '../components/HeroLoader'
+import { FeedEnd } from '../components/FeedEnd'
 
 export default function DonghuaHomePage() {
-  const [data, setData] = useState<Awaited<ReturnType<typeof fetchDonghuaHome>> | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [trailerMedia, setTrailerMedia] = useState<AnimeMedia | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetchDonghuaHome();
-      setData(res);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load donghua feed');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const home = useAsync(fetchDonghuaHome, [])
 
   useEffect(() => {
-    document.title = 'Donghua Hub — Anime by Adi 💀';
-    load();
-  }, [load]);
+    document.title = 'Donghua — AnimeStream'
+  }, [])
 
-  const renderCards = (items?: AnimeMedia[], ranked = false) =>
-    (items || []).map((item, i) => (
-      <div key={item.id} className="w-[148px] sm:w-[172px] md:w-[186px] shrink-0 snap-start">
-        <MediaCard
-          href={`/anime/${item.id}`}
-          title={pickTitle(item.title)}
-          image={item.coverImage?.extraLarge || item.coverImage?.large}
-          rank={ranked ? i + 1 : undefined}
-          meta={[
-            item.format?.replace(/_/g, ' '),
-            item.seasonYear,
-            item.averageScore ? `${(item.averageScore / 10).toFixed(1)} ★` : null,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        />
-      </div>
-    ));
+  const heroItems = useMemo(() => {
+    const list = home.data?.trending ?? []
+    const withBanner = list.filter((m) => m.bannerImage)
+    return (withBanner.length >= 6 ? withBanner : list).slice(0, 14)
+  }, [home.data])
+
+  const rows = useMemo(
+    () => ({
+      trending: home.data?.trending.map(mediaToCard),
+      airing: home.data?.season.map(mediaToCard),
+      popular: home.data?.popular.map(mediaToCard),
+      top: home.data?.top.map(mediaToCard),
+      upcoming: home.data?.upcoming.map(mediaToCard),
+    }),
+    [home.data],
+  )
+
+  const err = home.error?.message
 
   return (
-    <main className="min-h-screen bg-canvas">
-      <HeroCarousel items={data?.trending || []} loading={loading} onPlayTrailer={setTrailerMedia} />
+    <main className="bg-background">
+      {home.loading ? (
+        <div className="relative h-[68svh] max-h-[660px] min-h-[460px] overflow-hidden bg-background lg:h-[70svh] lg:max-h-[660px]">
+          <HeroLoader />
+        </div>
+      ) : err ? (
+        <div className="grid min-h-[60svh] place-items-center px-4 pt-20">
+          <ErrorState message={err} onRetry={home.reload} />
+        </div>
+      ) : (
+        <HeroCarousel items={heroItems} />
+      )}
 
-      <div className="space-y-12 pt-6 pb-8">
-        <HubBar />
+      <div className="relative z-10 -mt-1 space-y-12 bg-background pb-20 pt-9 sm:space-y-14">
+        <ContinueRow />
 
-        <MediaRow
+        <AnimeRow
+          id="donghua-trending"
+          viewAll="/donghua/browse?sort=TRENDING_DESC"
           eyebrow="Chinese animation"
           title="Trending Donghua"
-          viewAll="/donghua/browse"
-          loading={loading}
-          error={error}
-          onRetry={load}
-        >
-          {renderCards(data?.trending)}
-        </MediaRow>
+          items={rows.trending}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-        <MediaRow
-          eyebrow="Currently airing"
-          title="Ongoing Cultivation & Action"
+        <AnimeRow
+          id="donghua-airing"
           viewAll="/donghua/browse?status=RELEASING"
-          loading={loading}
-          error={error}
-          onRetry={load}
-        >
-          {renderCards(data?.airing)}
-        </MediaRow>
+          eyebrow="Ongoing series"
+          title="Currently Airing"
+          items={rows.airing}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-        <MediaRow
-          eyebrow="Most watched"
-          title="Popular Donghua"
+        <AnimeRow
+          id="donghua-popular"
           viewAll="/donghua/browse?sort=POPULARITY_DESC"
-          loading={loading}
-          error={error}
-          onRetry={load}
-        >
-          {renderCards(data?.popular)}
-        </MediaRow>
+          eyebrow="Fan favourites"
+          title="All-Time Popular Donghua"
+          items={rows.popular}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
 
-        <MediaRow
-          eyebrow="Top scores"
-          title="Highest Rated Donghua"
-          loading={loading}
-          error={error}
-          onRetry={load}
-        >
-          {renderCards(data?.top, true)}
-        </MediaRow>
+        <AnimeRow
+          id="donghua-top"
+          viewAll="/donghua/browse?sort=SCORE_DESC"
+          eyebrow="Highest rated"
+          title="Top Rated Donghua"
+          items={rows.top}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+          ranked
+        />
+
+        <AnimeRow
+          id="donghua-upcoming"
+          viewAll="/donghua/browse?status=NOT_YET_RELEASED"
+          eyebrow="Mark your calendar"
+          title="Coming Soon"
+          items={rows.upcoming}
+          loading={home.loading}
+          error={err}
+          onRetry={home.reload}
+        />
+
+        {!home.loading && !err && (
+          <FeedEnd
+            browseTo="/donghua/browse"
+            browseLabel="Browse All Donghua"
+            subtitle="Explore the full donghua catalog with genre, format, year, and status filters."
+          />
+        )}
       </div>
-
-      <TrailerModal media={trailerMedia} onClose={() => setTrailerMedia(null)} />
     </main>
-  );
+  )
 }

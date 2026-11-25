@@ -1,275 +1,238 @@
-import { useEffect, useState } from 'react';
-import { useLocation, useSearchParams } from 'react-router-dom';
-import { Search } from 'lucide-react';
-import type { AnimeMedia } from '../types';
-import { ANIME_GENRES, browseAnime, pickTitle } from '../lib/api';
-import { HubBar } from '../components/HubBar';
-import { MediaCard } from '../components/MediaCard';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { Search, X } from 'lucide-react'
+import { fetchCatalog, type CatalogParams } from '../services/anilist'
+import type { AniCardMedia } from '../types/anime'
+import { GENRES } from '../lib/constants'
+import { mediaToCard } from '../lib/mappers'
+import { humanize } from '../lib/utils'
+import { AnimeCard } from '../components/AnimeCard'
+import { ErrorState } from '../components/ErrorState'
+import { CustomSelect, type Option } from '../components/CustomSelect'
+import { Skeleton } from '../components/Skeleton'
+import { FeedEnd } from '../components/FeedEnd'
 
-const FORMATS = [
-  { value: '', label: 'All Formats' },
-  { value: 'TV', label: 'TV Series' },
-  { value: 'MOVIE', label: 'Movie' },
-  { value: 'OVA', label: 'OVA' },
-  { value: 'ONA', label: 'ONA' },
-  { value: 'SPECIAL', label: 'Special' },
-];
+type Preset = 'trending' | 'popular' | 'top' | 'browse' | 'donghua'
 
-const STATUSES = [
-  { value: '', label: 'All Statuses' },
-  { value: 'RELEASING', label: 'Airing' },
-  { value: 'FINISHED', label: 'Completed' },
-  { value: 'NOT_YET_RELEASED', label: 'Upcoming' },
-];
-
-const SORTS = [
-  { value: 'TRENDING_DESC', label: 'Trending' },
-  { value: 'POPULARITY_DESC', label: 'Most Popular' },
-  { value: 'SCORE_DESC', label: 'Highest Rated' },
-  { value: 'START_DATE_DESC', label: 'Newest' },
-];
-
-interface CatalogPageProps {
-  presetSort?: string;
-  presetTitle?: string;
-  donghuaOnly?: boolean;
+const COPY: Record<Preset, { eyebrow: string; title: string; sub: string; sort: string; minPopularity?: number; country?: string }> = {
+  trending: { eyebrow: 'Right now', title: 'Trending', sub: 'What everyone is watching this week.', sort: 'TRENDING_DESC' },
+  popular: { eyebrow: 'Fan favourites', title: 'Popular', sub: 'The most-loved anime of all time.', sort: 'POPULARITY_DESC' },
+  top: { eyebrow: 'Highest rated', title: 'Top Rated', sub: 'Best scored anime on AniList (with a real audience).', sort: 'SCORE_DESC', minPopularity: 10000 },
+  browse: { eyebrow: 'Find your next watch', title: 'Browse', sub: 'Filter by genre, year, season, format and more.', sort: 'POPULARITY_DESC' },
+  donghua: { eyebrow: 'Chinese animation', title: 'Browse Donghua', sub: 'Filter donghua by genre, year, season, format and more.', sort: 'POPULARITY_DESC', country: 'CN' },
 }
 
-export default function CatalogPage({ presetSort, presetTitle, donghuaOnly }: CatalogPageProps) {
-  const { pathname } = useLocation();
-  const [searchParams, setSearchParams] = useSearchParams();
+const FORMATS = ['TV', 'MOVIE', 'OVA', 'ONA', 'SPECIAL', 'TV_SHORT']
+const SEASONS = ['WINTER', 'SPRING', 'SUMMER', 'FALL']
+const STATUSES = ['RELEASING', 'FINISHED', 'NOT_YET_RELEASED']
+const SORTS: [string, string][] = [
+  ['POPULARITY_DESC', 'Most popular'],
+  ['TRENDING_DESC', 'Trending'],
+  ['SCORE_DESC', 'Highest rated'],
+  ['START_DATE_DESC', 'Newest'],
+  ['FAVOURITES_DESC', 'Most favourited'],
+]
+const YEARS = Array.from({ length: new Date().getFullYear() + 2 - 1980 }, (_, i) => new Date().getFullYear() + 1 - i)
 
-  const [query, setQuery] = useState(searchParams.get('q') || '');
-  const [genre, setGenre] = useState(searchParams.get('genre') || '');
-  const [format, setFormat] = useState(searchParams.get('format') || '');
-  const [status, setStatus] = useState(searchParams.get('status') || '');
-  const [sort, setSort] = useState(searchParams.get('sort') || presetSort || 'TRENDING_DESC');
-  const [page, setPage] = useState(1);
+const opts = (label: string, items: Option[]): Option[] => [{ value: '', label: `Any ${label.toLowerCase()}` }, ...items]
+const FILTERS = [
+  { key: 'genre', label: 'Genre', options: opts('Genre', GENRES.map((g) => ({ value: g.name, label: g.name }))) },
+  { key: 'format', label: 'Format', options: opts('Format', FORMATS.map((f) => ({ value: f, label: f === 'TV_SHORT' ? 'TV Short' : ['TV', 'OVA', 'ONA'].includes(f) ? f : humanize(f) }))) },
+  { key: 'year', label: 'Year', options: opts('Year', YEARS.map((y) => ({ value: String(y), label: String(y) }))) },
+  { key: 'season', label: 'Season', options: opts('Season', SEASONS.map((x) => ({ value: x, label: humanize(x) }))) },
+  { key: 'status', label: 'Status', options: opts('Status', STATUSES.map((x) => ({ value: x, label: humanize(x) }))) },
+]
+const SORT_OPTIONS: Option[] = SORTS.map(([v, l]) => ({ value: v === 'POPULARITY_DESC' ? '' : v, label: l }))
 
-  const [items, setItems] = useState<AnimeMedia[]>([]);
-  const [hasNext, setHasNext] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default function CatalogPage({ preset }: { preset: Preset }) {
+  const copy = COPY[preset]
+  const [sp, setSp] = useSearchParams()
+  const get = (k: string) => sp.get(k) ?? ''
 
-  const isDonghua = donghuaOnly || pathname.startsWith('/donghua');
+  const [text, setText] = useState(get('q'))
+  useEffect(() => setText(get('q')), [preset]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (text !== get('q')) set({ q: text })
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [text]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function set(patch: Record<string, string>) {
+    setSp(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        for (const [k, v] of Object.entries(patch)) v ? next.set(k, v) : next.delete(k)
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  const params: CatalogParams = useMemo(
+    () => ({
+      search: get('q') || undefined,
+      genre: get('genre') || undefined,
+      format: get('format') || undefined,
+      year: Number(get('year')) || undefined,
+      season: get('season') || undefined,
+      status: get('status') || undefined,
+      country: copy.country,
+      sort: ((preset === 'browse' || preset === 'donghua') && get('sort')) || copy.sort,
+      minPopularity: copy.minPopularity,
+    }),
+    [sp, preset], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const key = JSON.stringify(params)
+
+  const [items, setItems] = useState<AniCardMedia[]>([])
+  const [page, setPage] = useState(1)
+  const [hasNext, setHasNext] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>()
+  const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
-    setQuery(searchParams.get('q') || '');
-    setGenre(searchParams.get('genre') || '');
-    setStatus(searchParams.get('status') || '');
-    setFormat(searchParams.get('format') || '');
-    if (presetSort) setSort(presetSort);
-    setPage(1);
-  }, [pathname, presetSort, searchParams]);
+    setItems([])
+    setPage(1)
+    setHasNext(true)
+    setError(undefined)
+  }, [key])
 
   useEffect(() => {
-    document.title = `${presetTitle || (isDonghua ? 'Browse Donghua' : 'Browse Anime')} — Anime by Adi 💀`;
-  }, [presetTitle, isDonghua]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    const timer = window.setTimeout(async () => {
-      try {
-        const res = await browseAnime({
-          page,
-          perPage: 24,
-          search: query.trim() || undefined,
-          genre: genre || undefined,
-          format: format || undefined,
-          status: status || undefined,
-          season: searchParams.get('season') || undefined,
-          year: searchParams.get('year') ? Number(searchParams.get('year')) : undefined,
-          sort: query.trim() ? 'SEARCH_MATCH' : sort,
-          countryOfOrigin: isDonghua ? 'CN' : undefined,
-        });
-        if (!cancelled) {
-          setItems((prev) => (page === 1 ? res.items : [...prev, ...res.items]));
-          setHasNext(res.hasNextPage);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load catalog');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 220);
-
+    let off = false
+    setLoading(true)
+    fetchCatalog(params, page)
+      .then((r) => {
+        if (off) return
+        setItems((prev) => {
+          const seen = new Set(prev.map((m) => m.id))
+          return [...prev, ...r.items.filter((m) => !seen.has(m.id))]
+        })
+        setHasNext(r.hasNext)
+        setError(undefined)
+      })
+      .catch((e: Error) => !off && setError(e.message))
+      .finally(() => !off && setLoading(false))
     return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [page, query, genre, format, status, sort, isDonghua, searchParams]);
+      off = true
+    }
+  }, [key, page, nonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const updateFilter = (key: string, value: string) => {
-    setPage(1);
-    const next = new URLSearchParams(searchParams);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    setSearchParams(next, { replace: true });
-  };
+  const sentinel = useRef<HTMLDivElement>(null)
+  const more = useCallback(() => setPage((p) => p + 1), [])
+  useEffect(() => {
+    const el = sentinel.current
+    if (!el || loading || !hasNext || error) return
+    const io = new IntersectionObserver((e) => e[0].isIntersecting && more(), { rootMargin: '700px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [loading, hasNext, error, more, items.length])
+
+  useEffect(() => {
+    document.title = `${copy.title} — AnimeStream`
+  }, [copy.title])
+
+  const cards = useMemo(() => items.map(mediaToCard), [items])
+  const filtered = ['genre', 'format', 'year', 'season', 'status', 'q'].some((k) => get(k))
+  const ranked = preset !== 'browse' && preset !== 'donghua' && !filtered
 
   return (
-    <main className="min-h-screen bg-canvas pt-20 pb-16">
-      <HubBar />
+    <main className="mx-auto max-w-7xl px-4 pb-28 pt-6 sm:px-6 sm:pt-8 md:pb-16 md:pt-10">
+      <header>
+        <p className="mb-2 eyebrow text-accent">{copy.eyebrow}</p>
+        <h1 className="font-display text-4xl font-black tracking-tight">
+          {copy.title}
+        </h1>
+        <p className="mt-3 max-w-xl text-muted">{copy.sub}</p>
+      </header>
 
-      <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold text-teal">
-              {isDonghua ? 'Chinese Animation Catalog' : 'Complete Anime Catalog'}
-            </p>
-            <h1 className="font-display text-3xl font-extrabold tracking-tight text-ink">
-              {presetTitle || (isDonghua ? 'Browse Donghua' : 'Browse Anime')}
-            </h1>
-          </div>
-          {(genre || format || status || query) && (
+      <div className="sticky top-14 z-30 md:top-0 -mx-4 mt-8 border-y border-border/60 bg-background/98 px-4 py-3 sm:-mx-6 sm:px-6">
+        <div className="no-scrollbar flex items-center gap-2 overflow-x-auto">
+          {(preset === 'browse' || preset === 'donghua') && (
+            <label className="relative shrink-0">
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
+              <input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={preset === 'donghua' ? 'Search donghua…' : 'Search title…'}
+                className="h-10 w-44 rounded-full border border-border bg-card/60 pl-10 pr-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-56"
+              />
+            </label>
+          )}
+          {FILTERS.map(({ key, label, options }) => (
+            <CustomSelect key={key} label={label} placeholder={label} value={get(key)} options={options} onChange={(v) => set({ [key]: v })} />
+          ))}
+          {(preset === 'browse' || preset === 'donghua') && (
+            <CustomSelect label="Sort" placeholder="Most popular" value={get('sort')} options={SORT_OPTIONS} onChange={(v) => set({ sort: v })} />
+          )}
+          {(filtered || get('sort')) && (
             <button
               type="button"
               onClick={() => {
-                setQuery('');
-                setGenre('');
-                setFormat('');
-                setStatus('');
-                setPage(1);
-                setSearchParams({}, { replace: true });
+                setText('')
+                setSp({}, { replace: true })
               }}
-              className="self-start text-xs font-semibold text-accent hover:underline"
+              className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-foreground px-4 text-sm font-semibold text-background transition active:scale-95"
             >
-              Reset filters
+              <X className="size-4" /> Reset
             </button>
           )}
         </div>
-
-        {/* Filter Controls */}
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="relative lg:col-span-2">
-            <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-              placeholder="Search titles..."
-              className="w-full rounded-lg border border-line bg-surface py-2.5 pl-10 pr-4 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
-            />
-          </div>
-
-          <select
-            value={genre}
-            onChange={(e) => {
-              setGenre(e.target.value);
-              updateFilter('genre', e.target.value);
-            }}
-            aria-label="Filter by genre"
-            className="rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-ink focus:border-accent focus:outline-none"
-          >
-            <option value="">All Genres</option>
-            {ANIME_GENRES.map((g) => (
-              <option key={g} value={g}>{g}</option>
-            ))}
-          </select>
-
-          <select
-            value={format}
-            onChange={(e) => {
-              setFormat(e.target.value);
-              updateFilter('format', e.target.value);
-            }}
-            aria-label="Filter by format"
-            className="rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-ink focus:border-accent focus:outline-none"
-          >
-            {FORMATS.map((f) => (
-              <option key={f.value} value={f.value}>{f.label}</option>
-            ))}
-          </select>
-
-          <div className="grid grid-cols-2 gap-2">
-            <select
-              value={status}
-              onChange={(e) => {
-                setStatus(e.target.value);
-                updateFilter('status', e.target.value);
-              }}
-              aria-label="Filter by status"
-              className="rounded-lg border border-line bg-surface px-2.5 py-2.5 text-sm text-ink focus:border-accent focus:outline-none"
-            >
-              {STATUSES.map((s) => (
-                <option key={s.value} value={s.value}>{s.label}</option>
-              ))}
-            </select>
-
-            <select
-              value={sort}
-              onChange={(e) => {
-                setSort(e.target.value);
-                setPage(1);
-              }}
-              aria-label="Sort order"
-              className="rounded-lg border border-line bg-surface px-2.5 py-2.5 text-sm text-ink focus:border-accent focus:outline-none"
-            >
-              {SORTS.map((s) => (
-                <option key={s.value} value={s.value}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {error && (
-          <div className="mt-8 rounded-xl border border-line bg-surface p-6 text-center text-sm text-muted">
-            {error}
-          </div>
-        )}
-
-        <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-          {items.map((item, i) => (
-            <MediaCard
-              key={`${item.id}-${i}`}
-              href={`/anime/${item.id}`}
-              title={pickTitle(item.title)}
-              image={item.coverImage?.extraLarge || item.coverImage?.large}
-              rank={presetSort === 'SCORE_DESC' ? i + 1 : undefined}
-              meta={[
-                item.format?.replace(/_/g, ' '),
-                item.seasonYear,
-                item.averageScore ? `${(item.averageScore / 10).toFixed(1)} ★` : null,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            />
-          ))}
-
-          {loading &&
-            Array.from({ length: 12 }).map((_, i) => (
-              <div key={`sk-${i}`} className="space-y-2.5">
-                <div className="skeleton-shimmer aspect-[2/3] w-full rounded-xl border border-line" />
-                <div className="skeleton-shimmer h-3.5 w-3/4 rounded" />
-                <div className="skeleton-shimmer h-3 w-1/2 rounded" />
-              </div>
-            ))}
-        </div>
-
-        {!loading && items.length === 0 && !error && (
-          <p className="mt-12 text-center text-sm text-muted">
-            No titles match these filters. Try adjusting your search or genre.
-          </p>
-        )}
-
-        {hasNext && !loading && (
-          <div className="mt-10 flex justify-center">
-            <button
-              type="button"
-              onClick={() => setPage((p) => p + 1)}
-              className="rounded-lg border border-line bg-surface px-6 py-2.5 text-sm font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
-            >
-              Load More
-            </button>
-          </div>
-        )}
       </div>
+
+      {error && !items.length ? (
+        <div className="grid min-h-[40svh] place-items-center">
+          <ErrorState message={error} onRetry={() => setNonce((n) => n + 1)} />
+        </div>
+      ) : (
+        <>
+          <div className="mt-8 grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-3 sm:gap-x-5 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            {cards.map((c, i) => (
+              <AnimeCard key={c.id} item={c} fluid index={i % 24} rank={ranked && i < 99 ? i + 1 : undefined} />
+            ))}
+            {loading &&
+              Array.from({ length: 12 }, (_, i) => (
+                <div key={`s${i}`}>
+                  <Skeleton className="aspect-[2/3] w-full rounded-2xl" />
+                  <Skeleton className="mt-3 h-4 w-4/5" />
+                  <Skeleton className="mt-2 h-3 w-1/2" />
+                </div>
+              ))}
+          </div>
+
+          {!loading && !items.length && (
+            <div className="grid min-h-[40svh] place-items-center text-center">
+              <div>
+                <p className="font-display text-2xl font-bold">Nothing matches</p>
+                <p className="mt-2 text-muted">Try removing a filter.</p>
+              </div>
+            </div>
+          )}
+          {error && items.length > 0 && (
+            <div className="mt-10 text-center">
+              <button type="button" onClick={() => setNonce((n) => n + 1)} className="rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background active:scale-95">
+                Couldn’t load more — retry
+              </button>
+            </div>
+          )}
+          <div ref={sentinel} className="h-10" />
+          {!hasNext && items.length > 0 && !params.search && !text.trim() && (
+            <FeedEnd
+              title="No more results"
+              browseTo={preset === 'donghua' ? '/donghua/browse' : '/browse'}
+              browseLabel="Browse All"
+              count={items.length}
+              itemLabel={preset === 'donghua' ? 'donghua titles' : 'anime titles'}
+              onBrowse={() => {
+                setText('')
+                setSp({}, { replace: true })
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+              }}
+            />
+          )}
+        </>
+      )}
     </main>
-  );
+  )
 }

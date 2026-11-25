@@ -1,134 +1,266 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Calendar } from 'lucide-react';
-import type { AiringItem } from '../types';
-import { fetchWeeklySchedule, formatRelativeTime, pickTitle } from '../lib/api';
-import { HubBar } from '../components/HubBar';
-import { MediaImage } from '../components/MediaImage';
+import { Img } from '../components/Img'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Play, Star } from 'lucide-react'
+import { fetchAiring } from '../services/anilist'
+import { fetchFallbackEpisodeTitles, fetchTmdb, fetchTmdbEpisodes } from '../services/api'
+import { anilistEpisodes, aniStartIso, normalizeAniListSeasonEpisodes, sanitizeEpisodeTitle, tmdbSeason } from '../lib/episodes'
+import { useAsync } from '../hooks/useAsync'
+import { cn, formatLabel, pickTitle, toScore10 } from '../lib/utils'
+import type { AniAiringEntry } from '../types/anime'
+import { ErrorState } from '../components/ErrorState'
+import { Skeleton } from '../components/Skeleton'
 
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DAY = 86400
+const BEFORE = 3
+const AFTER = 10
 
-export default function SchedulePage() {
-  const [items, setItems] = useState<AiringItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedDay, setSelectedDay] = useState<number>(new Date().getDay());
+const midnight = (d: Date) => {
+  const x = new Date(d)
+  x.setHours(0, 0, 0, 0)
+  return x
+}
+const time = (ts: number) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+function until(sec: number) {
+  if (sec <= 0) return null
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  return h >= 24 ? `in ${Math.floor(h / 24)}d ${h % 24}h` : h ? `in ${h}h ${m}m` : `in ${Math.max(m, 1)}m`
+}
+
+function Entry({ e, now }: { e: AniAiringEntry; now: number }) {
+  const m = e.media
+  const title = pickTitle(m.title)
+  const aired = e.airingAt <= now
+  const label = until(e.airingAt - now)
+  const fmt = formatLabel(m.format)
+  const liRef = useRef<HTMLLIElement>(null)
+  const [visible, setVisible] = useState(false)
+
+  const aniTitle = useMemo(() => {
+    const list = normalizeAniListSeasonEpisodes(
+      anilistEpisodes(m.streamingEpisodes, m.format),
+      m.episodes ?? e.episode,
+    )
+    return sanitizeEpisodeTitle(list.find((ep) => ep.n === e.episode)?.name, e.episode)
+  }, [m.streamingEpisodes, m.format, m.episodes, e.episode])
+
+  const [remoteEpTitle, setRemoteEpTitle] = useState<string | null>(null)
 
   useEffect(() => {
-    document.title = 'Airing Schedule — Anime by Adi 💀';
-    fetchWeeklySchedule()
-      .then(setItems)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load schedule'))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const grouped = useMemo(() => {
-    const map = new Map<number, AiringItem[]>();
-    for (let d = 0; d < 7; d++) map.set(d, []);
-    for (const item of items) {
-      const day = new Date(item.airingAt * 1000).getDay();
-      map.get(day)?.push(item);
+    if (!aired || aniTitle || visible) return
+    const el = liRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setVisible(true)
+      return
     }
-    return map;
-  }, [items]);
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisible(true)
+          io.disconnect()
+        }
+      },
+      { rootMargin: '250px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [aired, aniTitle, visible])
 
-  const activeList = grouped.get(selectedDay) || [];
+  useEffect(() => {
+    if (!aired || aniTitle || !visible) return
+    let dead = false
+    const resolveName = async () => {
+      try {
+        const tb = await fetchTmdb(m.id, title, m.format)
+        if (!dead && tb?.tmdb && tb.tmdb.type === 'tv') {
+          const s = tmdbSeason(tb.tmdb, { title: m.title }) ?? 1
+          const eps = await fetchTmdbEpisodes(tb.tmdb.id, s, {
+            start: aniStartIso(m.startDate),
+            epCount: m.episodes ?? e.episode,
+          })
+          const hit = sanitizeEpisodeTitle(eps.find((row) => row.n === e.episode)?.name, e.episode)
+          if (hit) {
+            if (!dead) setRemoteEpTitle(hit)
+            return
+          }
+        }
+      } catch {}
+
+      try {
+        const fb = await fetchFallbackEpisodeTitles(m.id, m.idMal, e.episode)
+        const hit = sanitizeEpisodeTitle(fb[e.episode], e.episode)
+        if (!dead && hit) setRemoteEpTitle(hit)
+      } catch {}
+    }
+    void resolveName()
+    return () => {
+      dead = true
+    }
+  }, [aired, aniTitle, visible, m.id, m.idMal, m.format, m.title, m.startDate, m.episodes, e.episode, title])
+
+  const epName = aniTitle || remoteEpTitle
+  return (
+    <li ref={liRef} className="group relative flex gap-4 rounded-2xl border border-border bg-card/60 p-3 transition hover:border-accent/50 hover:bg-card sm:p-4">
+      <Link to={`/anime/${m.id}`} className="relative aspect-[2/3] w-16 shrink-0 overflow-hidden rounded-xl bg-card-2 sm:w-20" style={{ backgroundColor: m.coverImage.color ?? undefined }}>
+        <Img src={m.coverImage.large ?? ''} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+      </Link>
+      <div className="flex min-w-0 flex-1 flex-col justify-between">
+        <div>
+          <Link to={`/anime/${m.id}`} className="line-clamp-2 font-semibold leading-snug transition-colors hover:text-accent">
+            {title}
+          </Link>
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted">
+            <span className="font-semibold text-foreground">{epName ? `Ep ${e.episode} · ${epName}` : `Episode ${e.episode}`}</span>
+            {fmt !== '—' && <span>{fmt}</span>}
+            {m.averageScore ? (
+              <span className="inline-flex items-center gap-1">
+                <Star className="size-3 fill-current" />
+                {toScore10(m.averageScore)}
+              </span>
+            ) : null}
+            <span className="hidden sm:inline">{m.genres.slice(0, 2).join(' · ')}</span>
+          </p>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className={cn('rounded-full px-2.5 py-1 text-[11px] font-semibold', aired ? 'bg-card-2 text-muted' : 'bg-accent/15 text-accent')}>
+            {aired ? 'Aired' : label}
+          </span>
+          {aired ? (
+            <Link to={`/watch/${m.id}?ep=${e.episode}`} className="inline-flex items-center gap-1.5 rounded-full bg-foreground px-3.5 py-1.5 text-xs font-semibold text-background transition active:scale-95">
+              <Play className="size-3 fill-current" /> Watch
+            </Link>
+          ) : (
+            <Link to={`/anime/${m.id}`} className="rounded-full border border-border px-3.5 py-1.5 text-xs font-semibold transition hover:bg-foreground hover:text-background active:scale-95">
+              Details
+            </Link>
+          )}
+        </div>
+      </div>
+    </li>
+  )
+}
+
+export default function SchedulePage() {
+  const today = useMemo(() => midnight(new Date()), [])
+  const days = useMemo(() => Array.from({ length: BEFORE + AFTER + 1 }, (_, i) => new Date(today.getTime() + (i - BEFORE) * DAY * 1000)), [today])
+  const [sel, setSel] = useState(BEFORE)
+  const [japanOnly, setJapanOnly] = useState(false)
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000))
+  const strip = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    document.title = 'Schedule — AnimeStream'
+    const t = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000)
+    return () => window.clearInterval(t)
+  }, [])
+
+  const from = Math.floor(days[sel].getTime() / 1000)
+  const data = useAsync(() => fetchAiring(from - 1, from + DAY), [from])
+
+  useEffect(() => {
+    // scroll only the day strip; scrollIntoView would also drag the whole page sideways on phones
+    const box = strip.current
+    const on = box?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (box && on) box.scrollTo({ left: on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' })
+  }, [sel])
+
+  const groups = useMemo(() => {
+    const list = (data.data ?? []).filter((e) => !japanOnly || e.media.countryOfOrigin === 'JP')
+    const map = new Map<string, AniAiringEntry[]>()
+    for (const e of list.sort((a, b) => a.airingAt - b.airingAt || (b.media.popularity ?? 0) - (a.media.popularity ?? 0))) {
+      const k = time(e.airingAt)
+      map.set(k, [...(map.get(k) ?? []), e])
+    }
+    return [...map.entries()]
+  }, [data.data, japanOnly])
+
+  const total = groups.reduce((n, [, l]) => n + l.length, 0)
+  const nextKey = groups.find(([, l]) => l[0].airingAt > now)?.[0]
+  const tz = new Intl.DateTimeFormat([], { timeZoneName: 'short' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value
 
   return (
-    <main className="min-h-screen bg-canvas pt-20 pb-16">
-      <HubBar />
+    <main className="mx-auto max-w-4xl overflow-x-clip px-4 pb-28 pt-6 sm:px-6 sm:pt-8 md:pb-16 md:pt-10">
+      <header>
+        <p className="mb-2 eyebrow text-accent">Release calendar</p>
+        <h1 className="font-display text-4xl font-black tracking-tight">
+          Schedule
+        </h1>
+        <p className="mt-3 text-muted">Episodes airing each day, in your local time{tz ? ` (${tz})` : ''}.</p>
+      </header>
 
-      <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6">
-        <div className="flex items-center gap-3">
-          <Calendar className="size-6 text-accent" />
-          <div>
-            <p className="text-xs font-semibold text-teal">Weekly Simulcast Calendar</p>
-            <h1 className="font-display text-3xl font-extrabold tracking-tight text-ink">
-              Airing Schedule
-            </h1>
-          </div>
-        </div>
-
-        <div className="no-scrollbar mt-6 flex items-center gap-2 overflow-x-auto pb-2">
-          {DAYS.map((day, idx) => {
-            const count = grouped.get(idx)?.length || 0;
-            const active = selectedDay === idx;
+      <div className="sticky top-14 z-30 md:top-0 -mx-4 mt-8 border-y border-border/60 bg-background/98 px-4 py-3 sm:-mx-6 sm:px-6">
+        <div ref={strip} role="tablist" aria-label="Day" className="no-scrollbar relative flex gap-2 overflow-x-auto">
+          {days.map((d, i) => {
+            const on = i === sel
+            const isToday = i === BEFORE
             return (
               <button
-                key={day}
+                key={d.toISOString()}
                 type="button"
-                onClick={() => setSelectedDay(idx)}
-                className={`rounded-lg px-4 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors tabular-nums ${
-                  active
-                    ? 'bg-accent text-accent-ink'
-                    : 'border border-line bg-surface text-muted hover:text-ink'
-                }`}
+                role="tab"
+                aria-selected={on}
+                onClick={() => setSel(i)}
+                className={cn(
+                  'relative flex w-[4.2rem] shrink-0 flex-col items-center rounded-2xl border py-2 transition active:scale-95',
+                  on ? 'border-transparent bg-foreground text-background shadow-lg' : 'border-border bg-card/60 text-muted hover:text-foreground',
+                )}
               >
-                {day} · {count}
+                <span className="text-[10px] font-semibold uppercase tracking-wider">{isToday ? 'Today' : d.toLocaleDateString([], { weekday: 'short' })}</span>
+                <span className="font-display text-xl font-bold leading-tight">{d.getDate()}</span>
+                <span className="text-[10px]">{d.toLocaleDateString([], { month: 'short' })}</span>
               </button>
-            );
+            )
           })}
         </div>
-
-        {error && (
-          <div className="mt-6 rounded-xl border border-line bg-surface p-6 text-center text-sm text-muted">
-            {error}
-          </div>
-        )}
-
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {loading
-            ? Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="flex gap-3 rounded-xl border border-line bg-surface p-3">
-                  <div className="skeleton-shimmer h-24 w-16 shrink-0 rounded-lg" />
-                  <div className="flex-1 space-y-2 py-1">
-                    <div className="skeleton-shimmer h-4 w-3/4 rounded" />
-                    <div className="skeleton-shimmer h-3 w-1/2 rounded" />
-                    <div className="skeleton-shimmer h-3 w-1/3 rounded" />
-                  </div>
-                </div>
-              ))
-            : activeList.map((entry) => {
-                const title = pickTitle(entry.media.title);
-                const airDate = new Date(entry.airingAt * 1000);
-                const timeStr = airDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                return (
-                  <Link
-                    key={entry.id}
-                    to={`/watch/${entry.media.id}?ep=${entry.episode}`}
-                    className="group flex gap-3.5 rounded-xl border border-line bg-surface p-3 transition-colors hover:border-accent/50"
-                  >
-                    <div className="h-24 w-16 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-                      <MediaImage
-                        src={entry.media.coverImage?.large || entry.media.coverImage?.extraLarge}
-                        alt={title}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col justify-between py-0.5">
-                      <div>
-                        <p className="font-mono text-xs font-semibold text-teal tabular-nums">
-                          Episode {entry.episode} · {timeStr}
-                        </p>
-                        <h3 className="mt-1 line-clamp-2 text-sm font-semibold text-ink group-hover:text-accent">
-                          {title}
-                        </h3>
-                      </div>
-                      <p className="text-xs text-muted tabular-nums">
-                        {formatRelativeTime(entry.airingAt)}
-                      </p>
-                    </div>
-                  </Link>
-                );
-              })}
-        </div>
-
-        {!loading && activeList.length === 0 && !error && (
-          <p className="mt-12 text-center text-sm text-muted">
-            No scheduled episodes listed for {DAYS[selectedDay]}.
-          </p>
-        )}
       </div>
+
+      <div className="mt-6 flex items-center justify-between gap-3">
+        <h2 className="font-display text-xl font-bold">
+          {days[sel].toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}
+          {!data.loading && <span className="ml-2 text-sm font-medium text-muted">{total} episodes</span>}
+        </h2>
+        <button
+          type="button"
+          onClick={() => setJapanOnly((v) => !v)}
+          aria-pressed={japanOnly}
+          className={cn('shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition active:scale-95', japanOnly ? 'border-transparent bg-accent text-accent-fg' : 'border-border text-muted')}
+        >
+          Japan only
+        </button>
+      </div>
+
+      {data.error ? (
+        <div className="mt-10">
+          <ErrorState message={data.error.message} onRetry={data.reload} />
+        </div>
+      ) : data.loading ? (
+        <div className="mt-6 space-y-4">
+          {Array.from({ length: 5 }, (_, i) => (
+            <Skeleton key={i} className="h-32 w-full rounded-2xl" />
+          ))}
+        </div>
+      ) : total === 0 ? (
+        <p className="mt-16 text-center text-muted">No episodes scheduled for this day.</p>
+      ) : (
+        <ol className="relative mt-6 space-y-7 border-l border-border pl-5 sm:pl-8">
+          {groups.map(([t, list]) => (
+            <li key={t} className="relative">
+              <span className={cn('absolute -left-[1.62rem] top-1.5 size-3 rounded-full border-2 border-background sm:-left-[2.37rem]', t === nextKey ? 'bg-accent ring-4 ring-accent/25' : list[0].airingAt <= now ? 'bg-muted' : 'bg-foreground')} />
+              <p className="mb-3 flex items-center gap-2 font-display text-lg font-bold tabular-nums">
+                {t}
+                {t === nextKey && <span className="rounded-full bg-accent px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wider text-accent-fg">Up next</span>}
+              </p>
+              <ul className="space-y-3">
+                {list.map((e) => (
+                  <Entry key={e.id} e={e} now={now} />
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ol>
+      )}
     </main>
-  );
+  )
 }

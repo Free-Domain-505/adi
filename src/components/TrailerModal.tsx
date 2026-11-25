@@ -1,59 +1,69 @@
-import { useEffect } from 'react';
-import { X } from 'lucide-react';
-import type { AnimeMedia } from '../types';
-import { pickTitle } from '../lib/api';
+import { useEffect } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { X } from 'lucide-react'
+import type { AniTrailer } from '../types/anime'
 
-interface TrailerModalProps {
-  media: AnimeMedia | null;
-  onClose: () => void;
+function embedUrl(t: AniTrailer): string | null {
+  if (!t.id) return null
+  if (t.site === 'youtube') return `https://www.youtube-nocookie.com/embed/${t.id}?autoplay=1&rel=0`
+  if (t.site === 'dailymotion') return `https://www.dailymotion.com/embed/video/${t.id}?autoplay=1`
+  return null
 }
 
-export function TrailerModal({ media, onClose }: TrailerModalProps) {
+export function TrailerModal({ trailer, onClose }: { trailer: AniTrailer | null; onClose: () => void }) {
   useEffect(() => {
-    if (!media) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [media, onClose]);
+    if (!trailer) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [trailer, onClose])
 
-  if (!media || !media.trailer?.id) return null;
+  const src = trailer ? embedUrl(trailer) : null
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-4xl overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h3 className="line-clamp-1 font-display text-sm font-bold text-ink">
-            {pickTitle(media.title)} — Official Trailer
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close trailer"
-            className="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
+    <AnimatePresence>
+      {trailer && src && (
+        <motion.div
+          className="fixed inset-0 z-[90] grid place-items-center bg-black/80 p-4 backdrop-blur-sm"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={onClose}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Trailer"
+        >
+          <motion.div
+            className="relative aspect-video w-full max-w-4xl overflow-hidden rounded-3xl border border-white/10 bg-black shadow-2xl"
+            initial={{ scale: 0.9, y: 30, opacity: 0 }}
+            animate={{ scale: 1, y: 0, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <X className="size-4" />
-          </button>
-        </div>
-        <div className="relative aspect-video w-full bg-black">
-          <iframe
-            src={`https://www.youtube.com/embed/${media.trailer.id}?autoplay=1&rel=0`}
-            title={`${pickTitle(media.title)} Trailer`}
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowFullScreen
-            className="absolute inset-0 h-full w-full border-0"
-          />
-        </div>
-      </div>
-    </div>
-  );
+            <iframe
+              src={src}
+              title="Anime trailer"
+              className="h-full w-full"
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              allowFullScreen
+            />
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close trailer"
+              className="absolute right-3 top-3 grid size-9 place-items-center rounded-full bg-black/85 text-white transition hover:bg-black"
+            >
+              <X className="size-4" />
+            </button>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
 }

@@ -1,238 +1,264 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Loader2, Search, X } from 'lucide-react';
-import { browseAnime, pickTitle, searchManga, searchMovies, searchNovels } from '../lib/api';
-import { MediaImage } from './MediaImage';
+import { useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { AnimatePresence, motion } from 'framer-motion'
+import { CornerDownLeft, Search, SearchX, Star, X } from 'lucide-react'
+import { GENRES } from '../lib/constants'
+import { sectionOf } from '../lib/sections'
+import { useSearch } from '../context/SearchContext'
+import { searchAnime } from '../services/anilist'
+import type { AniMedia } from '../types/anime'
+import { cn, formatLabel, pickTitle, toScore10 } from '../lib/utils'
+import { armNavClickGuard } from '../lib/clickGuard'
+import { Skeleton } from './Skeleton'
+import { WatchedBadge } from './WatchedBadge'
+import { useWatchedAnimeIds } from '../lib/library'
 
-type HubTab = 'anime' | 'donghua' | 'manga' | 'manhwa' | 'novel' | 'movies';
+type SearchRow = { kind: 'anilist'; key: string; ani: AniMedia }
 
-interface SearchResultItem {
-  key: string;
-  title: string;
-  subtitle: string;
-  image: string;
-  href: string;
-}
+/** Command-palette style search (Ctrl/⌘ + K or "/"), querying exact catalog entries. */
+export function SearchModal() {
+  const { isOpen, seed, closeSearch } = useSearch()
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+  const inDonghua = sectionOf(pathname) === 'donghua'
+  const inputRef = useRef<HTMLInputElement>(null)
+  const requestId = useRef(0)
 
-interface SearchModalProps {
-  open: boolean;
-  onClose: () => void;
-  initialQuery?: string;
-}
-
-const TABS: { id: HubTab; label: string }[] = [
-  { id: 'anime', label: 'Anime' },
-  { id: 'donghua', label: 'Donghua' },
-  { id: 'manga', label: 'Manga' },
-  { id: 'manhwa', label: 'Manhwa' },
-  { id: 'novel', label: 'Novels' },
-  { id: 'movies', label: 'Movies & TV' },
-];
-
-export function SearchModal({ open, onClose, initialQuery = '' }: SearchModalProps) {
-  const [tab, setTab] = useState<HubTab>('anime');
-  const [query, setQuery] = useState(initialQuery);
-  const [results, setResults] = useState<SearchResultItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState('')
+  const [genre, setGenre] = useState<string | undefined>()
+  const [donghuaOnly, setDonghuaOnly] = useState(inDonghua)
+  const [results, setResults] = useState<SearchRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [active, setActive] = useState(0)
+  const watchedIds = useWatchedAnimeIds()
 
   useEffect(() => {
-    if (open) {
-      setTimeout(() => inputRef.current?.focus(), 40);
-    }
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const trimmed = query.trim();
-    if (!trimmed) {
-      setResults([]);
-      setError(null);
-      return;
-    }
-
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        let mapped: SearchResultItem[] = [];
-        if (tab === 'anime' || tab === 'donghua') {
-          const res = await browseAnime({
-            search: trimmed,
-            perPage: 16,
-            countryOfOrigin: tab === 'donghua' ? 'CN' : undefined,
-          });
-          mapped = res.items.map((item) => ({
-            key: `al:${item.id}`,
-            title: pickTitle(item.title),
-            subtitle: [
-              item.format?.replace(/_/g, ' '),
-              item.seasonYear,
-              item.averageScore ? `${(item.averageScore / 10).toFixed(1)} ★` : null,
-            ]
-              .filter(Boolean)
-              .join(' · '),
-            image: item.coverImage?.large || item.coverImage?.extraLarge || '',
-            href: `/anime/${item.id}`,
-          }));
-        } else if (tab === 'manga' || tab === 'manhwa') {
-          const res = await searchManga(trimmed, tab);
-          mapped = res.results.map((item) => ({
-            key: `md:${item.id}`,
-            title: item.title,
-            subtitle: [item.kind, item.year, item.status].filter(Boolean).join(' · '),
-            image: item.cover,
-            href: `/${tab}/${item.id}`,
-          }));
-        } else if (tab === 'novel') {
-          const res = await searchNovels(trimmed);
-          mapped = res.results.map((item) => ({
-            key: `nv:${item.slug}`,
-            title: item.title,
-            subtitle: item.stats || 'Light Novel',
-            image: item.cover,
-            href: `/novel/${item.slug}`,
-          }));
-        } else {
-          const res = await searchMovies(trimmed);
-          mapped = res.results.map((item) => ({
-            key: `mv:${item.type}:${item.id}`,
-            title: item.title,
-            subtitle: [item.type === 'tv' ? 'TV Series' : 'Movie', item.year, item.rating ? `${item.rating} ★` : null]
-              .filter(Boolean)
-              .join(' · '),
-            image: item.poster,
-            href: `/movies/${item.type}/${item.id}`,
-          }));
-        }
-        if (!cancelled) setResults(mapped);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Search failed');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 320);
-
+    if (!isOpen) return
+    setQuery(seed.query ?? '')
+    setGenre(seed.genre)
+    setDonghuaOnly(inDonghua)
+    setActive(0)
+    const t = window.setTimeout(() => inputRef.current?.focus(), 60)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [open, query, tab]);
+      window.clearTimeout(t)
+      document.body.style.overflow = prev
+    }
+  }, [isOpen, seed, inDonghua])
 
-  if (!open) return null;
+  useEffect(() => {
+    if (!isOpen) return
+    const q = query.trim()
+    if (!q && !genre) {
+      setResults([])
+      setLoading(false)
+      setError(null)
+      return
+    }
+    setLoading(true)
+    const id = ++requestId.current
+    const t = window.setTimeout(() => {
+      searchAnime(q, genre, donghuaOnly ? 'CN' : undefined)
+        .then((list) => {
+          if (id !== requestId.current) return
+          setResults(list.map((ani) => ({ kind: 'anilist', key: `ani-${ani.id}`, ani })))
+          setError(null)
+          setActive(0)
+        })
+        .catch((e: unknown) => {
+          if (id === requestId.current) setError(e instanceof Error ? e.message : 'Search failed')
+        })
+        .finally(() => {
+          if (id === requestId.current) setLoading(false)
+        })
+    }, 280)
+    return () => window.clearTimeout(t)
+  }, [query, genre, donghuaOnly, isOpen])
+
+  function go(row: SearchRow) {
+    armNavClickGuard(900)
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
+    closeSearch()
+    navigate(`/anime/${row.ani.id}`)
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Escape') closeSearch()
+    else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActive((a) => Math.min(a + 1, results.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActive((a) => Math.max(a - 1, 0))
+    } else if (e.key === 'Enter' && results[active]) {
+      go(results[active])
+    }
+  }
+
+  const idle = !query.trim() && !genre
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Search Anime by Adi 💀"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/75 p-4 pt-16 backdrop-blur-sm sm:pt-24"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-3 border-b border-line px-4 py-3.5">
-          <Search className="size-4 shrink-0 text-accent" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${TABS.find((t) => t.id === tab)?.label}...`}
-            className="w-full bg-transparent text-sm text-ink placeholder:text-muted focus:outline-none"
-          />
-          {loading && <Loader2 className="size-4 shrink-0 animate-spin text-accent" />}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close search"
-            className="rounded-lg p-1.5 text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-black/60 px-3 pt-[8svh] backdrop-blur-sm sm:pt-[12svh]"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={closeSearch}
+          onKeyDown={onKeyDown}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Search anime"
+        >
+          <motion.div
+            className="flex max-h-[80svh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-2xl"
+            initial={{ opacity: 0, y: -24, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -16, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <X className="size-4" />
-          </button>
-        </div>
-
-        <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto border-b border-line bg-canvas/40 px-4 py-2.5">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                setTab(t.id);
-                setResults([]);
-              }}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
-                tab === t.id
-                  ? 'bg-accent text-accent-ink'
-                  : 'text-muted hover:bg-surface-2 hover:text-ink'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="max-h-[60vh] overflow-y-auto p-3">
-          {error ? (
-            <p className="py-8 text-center text-sm text-muted">{error}</p>
-          ) : !query.trim() ? (
-            <div className="py-10 text-center">
-              <p className="text-sm font-medium text-ink">Search across Anime by Adi 💀</p>
-              <p className="mt-1 text-xs text-muted">
-                Type any anime, donghua, manga, manhwa, novel, or movie for instant HD results.
-              </p>
+            <div className="flex items-center gap-3 border-b border-border px-4 py-3.5">
+              <Search className="size-5 shrink-0 text-muted" />
+              {genre && (
+                <button
+                  type="button"
+                  onClick={() => setGenre(undefined)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground px-2.5 py-1 text-xs font-semibold text-background"
+                >
+                  {genre} <X className="size-3" />
+                </button>
+              )}
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={donghuaOnly ? 'Search donghua by title…' : 'Search anime or donghua…'}
+                className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted"
+                aria-label={donghuaOnly ? 'Search donghua' : 'Search anime'}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                onClick={() => setDonghuaOnly((d) => !d)}
+                aria-pressed={donghuaOnly}
+                className={cn(
+                  'shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition',
+                  donghuaOnly ? 'border-accent bg-accent text-accent-fg' : 'border-border text-muted hover:text-foreground',
+                )}
+              >
+                Donghua
+              </button>
+              <button
+                type="button"
+                onClick={closeSearch}
+                aria-label="Close search"
+                className="grid size-8 shrink-0 place-items-center rounded-full bg-foreground/10 transition hover:bg-foreground/20"
+              >
+                <X className="size-4" />
+              </button>
             </div>
-          ) : loading && results.length === 0 ? (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {Array.from({ length: 6 }).map((_, idx) => (
-                <div key={idx} className="flex items-center gap-3 rounded-xl p-2">
-                  <div className="skeleton-shimmer h-16 w-12 shrink-0 rounded-lg" />
-                  <div className="flex-1 space-y-2">
-                    <div className="skeleton-shimmer h-4 w-3/4 rounded" />
-                    <div className="skeleton-shimmer h-3 w-1/2 rounded" />
+
+            <div className="no-scrollbar overflow-y-auto p-2">
+              {idle && (
+                <div className="p-3">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted">Browse by genre</p>
+                  <div className="flex flex-wrap gap-2">
+                    {GENRES.map((g) => (
+                      <button
+                        key={g.name}
+                        type="button"
+                        onClick={() => setGenre(g.name)}
+                        className="rounded-full border border-border px-3.5 py-1.5 text-sm transition hover:bg-foreground hover:text-background"
+                      >
+                        {g.name}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              ))}
+              )}
+
+              {!idle && loading && (
+                <ul className="space-y-1 p-1">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <li key={i} className="flex gap-3 p-2">
+                      <Skeleton className="h-16 w-11 shrink-0" />
+                      <div className="flex-1 space-y-2 pt-1">
+                        <Skeleton className="h-4 w-2/3" />
+                        <Skeleton className="h-3 w-1/3" />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {!idle && !loading && error && <p className="p-6 text-center text-sm text-muted">{error}</p>}
+
+              {!idle && !loading && !error && results.length === 0 && (
+                <div className="flex flex-col items-center gap-2 p-10 text-center text-muted">
+                  <SearchX className="size-8" />
+                  <p className="text-sm">No anime found. Try a different title.</p>
+                </div>
+              )}
+
+              {!loading && !error && results.length > 0 && (
+                <ul role="listbox">
+                  {results.map((row, i) => {
+                    const r = row.ani
+                    return (
+                      <li key={row.key} role="option" aria-selected={i === active}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            void go(row)
+                          }}
+                          onMouseEnter={() => setActive(i)}
+                          className={cn(
+                            'flex w-full items-center gap-3 rounded-2xl p-2 text-left transition-colors',
+                            i === active ? 'bg-foreground/10' : 'hover:bg-foreground/5',
+                          )}
+                        >
+                          <img
+                            src={r.coverImage.large ?? ''}
+                            alt=""
+                            loading="lazy"
+                            className="h-16 w-11 shrink-0 rounded-lg object-cover"
+                            style={{ backgroundColor: r.coverImage.color ?? undefined }}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium">{pickTitle(r.title)}</span>
+                            <span className="mt-0.5 block truncate text-xs text-muted">
+                              {[formatLabel(r.format), r.seasonYear, r.genres.slice(0, 2).join(', ')]
+                                .filter((v) => v && v !== '—')
+                                .join(' · ')}
+                            </span>
+                          </span>
+                          {watchedIds.has(r.id) && <WatchedBadge variant="inline" className="shrink-0" />}
+                          {r.averageScore ? (
+                            <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold">
+                              <Star className="size-3.5 fill-current" />
+                              {toScore10(r.averageScore)}
+                            </span>
+                          ) : null}
+                          {i === active && <CornerDownLeft className="hidden size-4 shrink-0 text-muted sm:block" />}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
-          ) : !loading && results.length === 0 ? (
-            <p className="py-10 text-center text-sm text-muted">No matches found for &ldquo;{query}&rdquo;.</p>
-          ) : (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {results.map((item) => (
-                <Link
-                  key={item.key}
-                  to={item.href}
-                  onClick={onClose}
-                  className="flex items-center gap-3 rounded-xl border border-transparent p-2 transition-colors hover:border-line hover:bg-surface-2"
-                >
-                  <div className="h-16 w-12 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-                    <MediaImage src={item.image} alt={item.title} className="h-full w-full object-cover" />
-                  </div>
-                  <div className="min-w-0">
-                    <h4 className="line-clamp-1 text-sm font-semibold text-ink">{item.title}</h4>
-                    {item.subtitle && (
-                      <p className="mt-0.5 line-clamp-1 text-xs text-muted tabular-nums">{item.subtitle}</p>
-                    )}
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
 }

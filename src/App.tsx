@@ -1,213 +1,324 @@
-import { useEffect, useState } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Ban, LogOut, MessageCircle } from 'lucide-react';
-import { signOutUser } from './lib/supabase';
-import { OWNER_PHONE_INTL, isOwnerAdmin, useAuth, useBlockedState } from './lib/storage';
-import { Navbar } from './components/Navbar';
-import { SearchModal } from './components/SearchModal';
-import { Footer } from './components/Footer';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { AuthPromptModal } from './components/AuthPromptModal';
-import { SubscriptionModal } from './components/SubscriptionModal';
-import {
-  ExtraEpisodeCelebrationModal,
-  FreeTierReminderPopup,
-  VipCelebrationModal,
-} from './components/VipAndReminderPopups';
-import HomePage from './pages/HomePage';
-import DonghuaHomePage from './pages/DonghuaHomePage';
-import CatalogPage from './pages/CatalogPage';
-import SchedulePage from './pages/SchedulePage';
-import DetailsPage from './pages/DetailsPage';
-import WatchPage from './pages/WatchPage';
-import MangaHomePage from './pages/MangaHomePage';
-import MangaDetailsPage from './pages/MangaDetailsPage';
-import MangaReaderPage from './pages/MangaReaderPage';
-import NovelHomePage from './pages/NovelHomePage';
-import NovelDetailsPage from './pages/NovelDetailsPage';
-import NovelReaderPage from './pages/NovelReaderPage';
-import MoviesHomePage from './pages/MoviesHomePage';
-import MovieDetailsPage from './pages/MovieDetailsPage';
-import MovieWatchPage from './pages/MovieWatchPage';
-import WebSeriesPage from './pages/WebSeriesPage';
-import ListPage from './pages/ListPage';
-import LoginPage from './pages/LoginPage';
-import AdminPage from './pages/AdminPage';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { AniListDownBanner } from './components/AniListDownBanner'
+import { Footer } from './components/Footer'
+import { MobileDock } from './components/MobileDock'
+import { MobileHeader } from './components/MobileHeader'
+import { Navbar } from './components/Navbar'
+import { NavDrawer } from './components/NavDrawer'
+import { ScrollProgress } from './components/ScrollProgress'
+import { ScrollToTop } from './components/ScrollToTop'
+import { TopLoader } from './components/TopLoader'
+import { PageLoader } from './components/PageLoader'
+import { ShieldGate } from './components/ShieldGate'
+import { WelcomeNotes } from './components/WelcomeNotes'
+import { ShortcutsHelp } from './components/ShortcutsHelp'
+import { Toaster } from './components/Toaster'
+import { MovieSearchModal } from './components/MovieSearchModal'
+import { SearchModal } from './components/SearchModal'
+import { ChangelogModal } from './components/ChangelogModal'
+import { ChooseUsernameModal } from './components/ChooseUsernameModal'
+import { useTrackHistory } from './lib/backToDetails'
+import { initAniListSync } from './lib/anilist'
+import { useApplyTvMode } from './lib/keys'
+import { useSpatialNav } from './lib/spatial'
+import { isDetailsPath, isReaderPath, isWatchPath, sectionOf } from './lib/sections'
+import { useAuth } from './context/AuthContext'
+import { useProfile } from './lib/profile'
+import { checkDailySync } from './lib/sync'
 
-function ScrollToTop() {
-  const { pathname } = useLocation();
+import { toast } from './lib/toast'
+import { cn } from './lib/utils'
+
+// Split out lazy pages
+const AuthPage = lazy(() => import('./pages/AuthPage'))
+const LandingPage = lazy(() => import('./pages/LandingPage'))
+const HomePage = lazy(() => import('./pages/HomePage'))
+const DonghuaHomePage = lazy(() => import('./pages/DonghuaHomePage'))
+const DetailsPage = lazy(() => import('./pages/DetailsPage'))
+const CatalogPage = lazy(() => import('./pages/CatalogPage'))
+const SchedulePage = lazy(() => import('./pages/SchedulePage'))
+const WatchPage = lazy(() => import('./pages/WatchPage'))
+const ListPage = lazy(() => import('./pages/ListPage'))
+const NovelHomePage = lazy(() => import('./pages/NovelHomePage'))
+const NovelDetailsPage = lazy(() => import('./pages/NovelDetailsPage'))
+const NovelReaderPage = lazy(() => import('./pages/NovelReaderPage'))
+const NovelFindPage = lazy(() => import('./pages/NovelFindPage'))
+const MangaHomePage = lazy(() => import('./pages/MangaHomePage'))
+const MangaBrowsePage = lazy(() => import('./pages/MangaBrowsePage'))
+const MangaDetailsPage = lazy(() => import('./pages/MangaDetailsPage'))
+const MangaReaderPage = lazy(() => import('./pages/MangaReaderPage'))
+const ManhwaHomePage = lazy(() => import('./pages/ManhwaHomePage'))
+const ManhwaBrowsePage = lazy(() => import('./pages/ManhwaBrowsePage'))
+const ManhwaDetailsPage = lazy(() => import('./pages/ManhwaDetailsPage'))
+const ManhwaReaderPage = lazy(() => import('./pages/ManhwaReaderPage'))
+const ManhwaFindPage = lazy(() => import('./pages/ManhwaFindPage'))
+const MoviesHomePage = lazy(() => import('./pages/MoviesHomePage'))
+const MoviesBrowsePage = lazy(() => import('./pages/MoviesBrowsePage'))
+const MovieDetailsPage = lazy(() => import('./pages/MovieDetailsPage'))
+const MovieWatchPage = lazy(() => import('./pages/MovieWatchPage'))
+const ProfilePage = lazy(() => import('./pages/ProfilePage'))
+const NameStylePage = lazy(() => import('./pages/NameStylePage'))
+const PublicProfilePage = lazy(() => import('./pages/PublicProfilePage'))
+const MessagesPage = lazy(() => import('./pages/MessagesPage'))
+const CommunityPage = lazy(() => import('./pages/CommunityPage'))
+const WatchPartyPage = lazy(() => import('./pages/WatchPartyPage'))
+const FindPage = lazy(() => import('./pages/FindPage'))
+const BustedPage = lazy(() => import('./pages/BustedPage'))
+const EmbedPage = lazy(() => import('./pages/EmbedPage'))
+const CallPage = lazy(() => import('./pages/CallPage'))
+const SupportPage = lazy(() => import('./pages/SupportPage'))
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'))
+
+export default function App() {
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
+
+  // Navigation drawer state
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  const reader = isReaderPath(pathname) // Novel / manga readers are full-screen
+  const isEmbed = pathname === '/embed' || pathname.startsWith('/embed/')
+  const isMessages = pathname.startsWith('/messages')
+  const inChat = /^\/messages\/[^/]+$/.test(pathname)
+  const isCall = pathname === '/call'
+  const isCommunity = pathname === '/community'
+  const isAuth = pathname === '/auth' || pathname.startsWith('/auth/') || pathname === '/login'
+  const gate = pathname === '/' // opening picker: full-screen, no sidebar / header / dock
+  const bare = gate || pathname === '/busted' || isEmbed || reader || isWatchPath(pathname) || isCall || isMessages || isAuth
+  const section = sectionOf(pathname)
+
+  const isHeroPage = pathname === '/home' || pathname === '/donghua' || pathname === '/movies'
+  const showNav = !bare && !isDetailsPath(pathname)
+
+  useTrackHistory()
+  useApplyTvMode()
+  useSpatialNav()
+  useEffect(() => initAniListSync(), [])
+  const { user, loading: authLoading, profileHydrated, recoveryMode, updatePassword, clearRecovery } = useAuth()
+  const me = useProfile()
+  const [newPass, setNewPass] = useState('')
+  const [savingPass, setSavingPass] = useState(false)
+
+
+
+  // Land on the Mood screen ('/') whenever a user signs in or registers
+  const wasLoggedOutRef = useRef(false)
   useEffect(() => {
-    window.scrollTo({ top: 0 });
-  }, [pathname]);
-  return null;
-}
-
-function AppShell() {
-  const [searchOpen, setSearchOpen] = useState(false);
-  const { user, authReady } = useAuth();
-  const blockedState = useBlockedState();
-  const isBlockedUser = Boolean(user && !isOwnerAdmin(user) && blockedState.blocked);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setSearchOpen((prev) => !prev);
+    if (authLoading) return
+    if (!user) {
+      wasLoggedOutRef.current = true
+      return
+    }
+    if (wasLoggedOutRef.current) {
+      wasLoggedOutRef.current = false
+      if (pathname !== '/' && pathname !== '/auth/anilist') {
+        navigate('/', { replace: true })
       }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+    }
+  }, [authLoading, user, pathname, navigate])
 
-  if (!authReady) {
+  const needsProfileSetup = Boolean(user && profileHydrated && (!me.avatar || !me.banner))
+  const isContentRoute = /^\/(home|donghua|trending|popular|top|browse|list|schedule|anime|mal|watch|movies|manga|manhwa|novel)(?:\/|$)/.test(pathname)
+  const lastSetupToastRef = useRef(0)
+
+  useEffect(() => {
+    if (needsProfileSetup && isContentRoute) {
+      const now = Date.now()
+      if (now - lastSetupToastRef.current > 2500) {
+        lastSetupToastRef.current = now
+        toast('Please choose your Profile PFP and Banner first!', 'info')
+      }
+    }
+  }, [needsProfileSetup, isContentRoute, pathname])
+
+  useEffect(() => {
+    if (user?.id) void checkDailySync(user.id)
+  }, [user?.id])
+
+  useEffect(() => {
+    document.documentElement.dataset.section = section ?? 'hub'
+  }, [section])
+
+  if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
-        <div className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-surface p-7">
-          <div className="mx-auto size-16 rounded-2xl skeleton-shimmer" />
-          <div className="mx-auto h-6 w-48 rounded skeleton-shimmer" />
-          <div className="mx-auto h-4 w-64 rounded skeleton-shimmer" />
-          <div className="h-11 w-full rounded-xl skeleton-shimmer" />
-          <div className="h-11 w-full rounded-xl skeleton-shimmer" />
-        </div>
+      <div className="flex min-h-screen w-full items-center justify-center bg-background text-foreground">
+        <PageLoader />
       </div>
-    );
+    )
   }
 
   if (!user) {
     return (
-      <>
+      <div className="flex min-h-screen w-full max-w-full flex-col overflow-x-clip bg-background text-foreground">
         <ScrollToTop />
-        <Routes>
-          <Route path="*" element={<LoginPage />} />
-        </Routes>
-      </>
-    );
-  }
-
-  if (isBlockedUser) {
-    const waSupport = `https://wa.me/${OWNER_PHONE_INTL}?text=${encodeURIComponent(
-      `Hello Aditya Rajput, my Anime by Adi 💀 account (${user?.email || ''}) was blocked after payment review. Please help check my payment.`
-    )}`;
-
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4 py-12 text-ink">
-        <div className="w-full max-w-md rounded-2xl border border-rose-500/45 bg-surface p-7 text-center shadow-2xl">
-          <div className="mx-auto grid size-14 place-items-center rounded-2xl border border-rose-500/40 bg-rose-500/15 text-rose-400">
-            <Ban className="size-7" />
-          </div>
-          <h1 className="mt-4 font-display text-2xl font-extrabold tracking-tight text-ink">
-            Account Blocked
-          </h1>
-          <p className="mt-2 text-xs font-semibold text-rose-300 sm:text-sm">
-            Fake or unverified payment submissions are not considered on Anime by Adi 💀
-          </p>
-          <div className="mt-4 rounded-xl border border-line bg-canvas/70 p-3.5 text-left text-xs leading-relaxed text-muted">
-            <p className="font-semibold text-ink">Reason:</p>
-            <p className="mt-1">{blockedState.reason}</p>
-            {user?.email && (
-              <p className="mt-2 font-mono text-[11px] text-muted">
-                Blocked Account: <span className="text-ink">{user.email}</span>
-              </p>
-            )}
-          </div>
-
-          <div className="mt-5 flex flex-col gap-2.5 sm:flex-row">
-            <a
-              href={waSupport}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 transition-transform hover:scale-[1.01]"
-            >
-              <MessageCircle className="size-4" />
-              <span>Contact Owner on WhatsApp</span>
-            </a>
-            <button
-              type="button"
-              onClick={() => signOutUser()}
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-line bg-canvas px-4 py-2.5 text-xs font-semibold text-ink hover:border-rose-400/50"
-            >
-              <LogOut className="size-4" />
-              <span>Sign Out</span>
-            </button>
-          </div>
-        </div>
+        <ErrorBoundary resetKey={pathname}>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
+              <Route path="/auth" element={<AuthPage />} />
+              <Route path="/u/:username" element={<PublicProfilePage />} />
+              <Route path="/user/:username" element={<PublicProfilePage />} />
+              <Route path="*" element={<Navigate to="/auth" replace />} />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
+        <Toaster />
       </div>
-    );
+    )
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-canvas text-ink">
+    <div className="flex min-h-screen w-full max-w-full flex-col overflow-x-clip bg-background text-foreground">
+      <TopLoader />
+      {!bare && <ScrollProgress key={pathname} />}
       <ScrollToTop />
-      <Navbar onOpenSearch={() => setSearchOpen(true)} />
+      {!bare && <AniListDownBanner />}
 
-      <div className="flex-1">
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/home" element={<HomePage />} />
+      {/* Desktop Top Navigation Bar */}
+      {showNav && (
+        <Navbar onOpenDrawer={() => setDrawerOpen(true)} />
+      )}
 
-          {/* Anime & Donghua */}
-          <Route path="/donghua" element={<DonghuaHomePage />} />
-          <Route path="/donghua/browse" element={<CatalogPage donghuaOnly presetTitle="Browse Donghua" />} />
-          <Route path="/browse" element={<CatalogPage />} />
-          <Route path="/trending" element={<CatalogPage presetSort="TRENDING_DESC" presetTitle="Trending Anime" />} />
-          <Route path="/popular" element={<CatalogPage presetSort="POPULARITY_DESC" presetTitle="All-Time Popular" />} />
-          <Route path="/top" element={<CatalogPage presetSort="SCORE_DESC" presetTitle="Top Rated Anime" />} />
-          <Route path="/schedule" element={<SchedulePage />} />
-          <Route path="/anime/:id" element={<DetailsPage />} />
-          <Route path="/watch/:id" element={<WatchPage />} />
+      {/* Mobile Top Header */}
+      {showNav && (
+        <MobileHeader onOpenDrawer={() => setDrawerOpen(true)} />
+      )}
 
-          {/* Manga & Manhwa */}
-          <Route path="/manga" element={<MangaHomePage kind="manga" />} />
-          <Route path="/manga/browse" element={<MangaHomePage kind="manga" />} />
-          <Route path="/manga/:id" element={<MangaDetailsPage />} />
-          <Route path="/manga/:id/read/:chapterId" element={<MangaReaderPage />} />
-          <Route path="/manhwa" element={<MangaHomePage kind="manhwa" />} />
-          <Route path="/manhwa/browse" element={<MangaHomePage kind="manhwa" />} />
-          <Route path="/manhwa/:id" element={<MangaDetailsPage />} />
-          <Route path="/manhwa/:id/read/:chapterId" element={<MangaReaderPage />} />
+      {/* Navigation Drawer (shared on mobile & desktop menu button) */}
+      <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
 
-          {/* Light Novels */}
-          <Route path="/novel" element={<NovelHomePage />} />
-          <Route path="/novel/find" element={<NovelHomePage />} />
-          <Route path="/novel/:slug" element={<NovelDetailsPage />} />
-          <Route path="/novel/:slug/read/:chapter" element={<NovelReaderPage />} />
+      {/* Main Content Area with responsive header offsets */}
+      <div
+        className={cn(
+          'flex flex-1 flex-col w-full min-w-0 max-w-full overflow-x-clip [&>*]:w-full [&>*]:min-w-0',
+          showNav ? (isHeroPage ? 'pt-0' : 'pt-14 md:pt-16') : 'pt-0',
+        )}
+      >
+        <ErrorBoundary resetKey={pathname}>
+          <Suspense fallback={<PageLoader />}>
+            {needsProfileSetup && isContentRoute ? (
+              <Navigate to="/profile?setup=1" replace />
+            ) : (
+            <Routes>
+              <Route path="/" element={<LandingPage />} />
+              <Route path="/home" element={<HomePage />} />
+              <Route path="/donghua" element={<DonghuaHomePage />} />
+              <Route path="/donghua/browse" element={<CatalogPage preset="donghua" />} />
+              <Route path="/trending" element={<CatalogPage preset="trending" />} />
+              <Route path="/popular" element={<CatalogPage preset="popular" />} />
+              <Route path="/top" element={<CatalogPage preset="top" />} />
+              <Route path="/browse" element={<CatalogPage preset="browse" />} />
+              <Route path="/list" element={<ListPage />} />
+              <Route path="/schedule" element={<SchedulePage />} />
+              <Route path="/profile" element={<ProfilePage />} />
+              <Route path="/profile/name-style" element={<NameStylePage />} />
+              <Route path="/profile/name-colours" element={<NameStylePage />} />
+              <Route path="/u/:username" element={<PublicProfilePage />} />
+              <Route path="/user/:username" element={<PublicProfilePage />} />
+              <Route path="/messages" element={<MessagesPage />} />
+              <Route path="/messages/:partnerHandle" element={<MessagesPage />} />
+              <Route path="/call" element={<CallPage />} />
+              <Route path="/community" element={<CommunityPage />} />
+              <Route path="/watchparty" element={<WatchPartyPage />} />
+              <Route path="/watchtogether" element={<WatchPartyPage />} />
+              <Route path="/auth" element={<Navigate to="/" replace />} />
+              <Route path="/auth/anilist" element={<Navigate to="/profile" replace />} />
+              <Route path="/auth/callback" element={<Navigate to="/" replace />} />
+              <Route path="/auth/login" element={<Navigate to="/" replace />} />
+              <Route path="/login" element={<Navigate to="/" replace />} />
+              {/* Novels */}
+              <Route path="/novel" element={<NovelHomePage />} />
+              <Route path="/novel/find" element={<NovelFindPage />} />
+              <Route path="/manga/find" element={<FindPage />} />
+              <Route path="/novel/:source/:slug" element={<NovelDetailsPage />} />
+              <Route path="/novel/:source/:slug/read/:chapter" element={<NovelReaderPage />} />
+              {/* Manga */}
+              <Route path="/manga" element={<MangaHomePage />} />
+              <Route path="/manga/browse" element={<MangaBrowsePage mode="manga" />} />
+              <Route path="/manga/:id" element={<MangaDetailsPage />} />
+              <Route path="/manga/:id/read/:chapterId" element={<MangaReaderPage />} />
+              {/* Manhwa */}
+              <Route path="/manhwa" element={<ManhwaHomePage />} />
+              <Route path="/manhwa/find" element={<ManhwaFindPage />} />
+              <Route path="/manhwa/browse" element={<ManhwaBrowsePage />} />
+              <Route path="/manhwa/:id" element={<ManhwaDetailsPage />} />
+              <Route path="/manhwa/:id/read/:chapterId" element={<ManhwaReaderPage />} />
+              {/* Movies & TV */}
+              <Route path="/movies" element={<MoviesHomePage />} />
+              <Route path="/movies/browse" element={<MoviesBrowsePage />} />
+              <Route path="/movies/watch/:type/:id" element={<MovieWatchPage />} />
+              <Route path="/movies/:type/:id" element={<MovieDetailsPage />} />
+              <Route path="/watch/:id" element={<WatchPage />} />
+              <Route path="/anime/:id" element={<DetailsPage />} />
+              <Route path="/mal/:id" element={<DetailsPage />} />
+              <Route path="/embed" element={<EmbedPage />} />
+              <Route path="/embed/:id" element={<EmbedPage />} />
+              <Route path="/embed/:id/:ep" element={<EmbedPage />} />
+              <Route path="/support" element={<SupportPage />} />
+              <Route path="/busted" element={<BustedPage />} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Routes>
+            )}
+          </Suspense>
+        </ErrorBoundary>
 
-          {/* Movies & Web Series */}
-          <Route path="/movies" element={<MoviesHomePage />} />
-          <Route path="/movies/browse" element={<MoviesHomePage browseMode />} />
-          <Route path="/series" element={<WebSeriesPage />} />
-          <Route path="/movies/:type/:id" element={<MovieDetailsPage />} />
-          <Route path="/movies/watch/:type/:id" element={<MovieWatchPage />} />
-
-          {/* Watchlist, History, Account & Admin */}
-          <Route path="/list" element={<ListPage />} />
-          <Route path="/account" element={<LoginPage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/auth" element={<LoginPage />} />
-          <Route path="/auth/login" element={<LoginPage />} />
-          <Route path="/admin" element={<AdminPage />} />
-
-          <Route path="*" element={<Navigate to="/home" replace />} />
-        </Routes>
+        {!bare && !isMessages && !isCommunity && <Footer />}
       </div>
 
-      <Footer />
-      <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <AuthPromptModal />
-      <SubscriptionModal />
-      <VipCelebrationModal />
-      <ExtraEpisodeCelebrationModal />
-      <FreeTierReminderPopup />
+      {!bare && !inChat && !isCommunity && <MobileDock onOpenDrawer={() => setDrawerOpen(true)} />}
+      {!bare && section === 'movies' ? <MovieSearchModal /> : <SearchModal />}
+      <Toaster />
+      <ShortcutsHelp />
+      <ShieldGate />
+      <ChangelogModal />
+      <ChooseUsernameModal />
+      <WelcomeNotes enabled={!isEmbed && !reader && !isWatchPath(pathname) && !isCall && !isMessages && pathname !== '/busted'} />
+      {recoveryMode && (
+        <div className="fixed inset-0 z-[160] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault()
+              if (savingPass) return
+              setSavingPass(true)
+              const { error } = await updatePassword(newPass)
+              setSavingPass(false)
+              if (!error) setNewPass('')
+            }}
+            className="w-full max-w-sm space-y-4 rounded-3xl border border-border bg-card p-6 shadow-2xl"
+          >
+            <div>
+              <h2 className="font-display text-xl font-bold text-foreground">Set New Password</h2>
+              <p className="mt-1 text-xs text-muted">Enter a new password (min 6 characters) for your AnimeStream account.</p>
+            </div>
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={newPass}
+              onChange={(e) => setNewPass(e.target.value)}
+              placeholder="New password"
+              className="h-11 w-full rounded-xl border border-border bg-card-2 px-4 text-sm text-foreground outline-none focus:border-accent"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={clearRecovery}
+                className="rounded-xl border border-border px-4 py-2 text-xs font-semibold text-muted hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingPass || newPass.length < 6}
+                className="rounded-xl bg-accent px-5 py-2 text-xs font-bold text-accent-fg disabled:opacity-50"
+              >
+                {savingPass ? 'Saving…' : 'Save Password'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
-  );
-}
-
-export default function App() {
-  return (
-    <ErrorBoundary>
-      <BrowserRouter>
-        <AppShell />
-      </BrowserRouter>
-    </ErrorBoundary>
-  );
+  )
 }
